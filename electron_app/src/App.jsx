@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, RefreshCw, Play, Download, ShieldAlert, Cpu } from 'lucide-react';
+import { Activity, RefreshCw, Play, Download, ShieldAlert, Cpu, Terminal } from 'lucide-react';
 import { TelemetryCards } from './components/TelemetryCards';
 import { ChartsSection } from './components/ChartsSection';
 import { CellBreakdown } from './components/CellBreakdown';
 import { StatusTimeline } from './components/StatusTimeline';
 import { RegisterInspector } from './components/RegisterInspector';
 import { DataExporter } from './components/DataExporter';
+import { DebugConsole } from './components/DebugConsole';
 import { SAFETY_STATUS_FLAGS, OPERATION_STATUS_FLAGS } from './utils/smbus_definitions';
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
   const [telemetry, setTelemetry] = useState(null);
   const [history, setHistory] = useState([]);
   const [eventLogs, setEventLogs] = useState([]);
+  const [debugLogs, setDebugLogs] = useState([]);
   const [recordedData, setRecordedData] = useState([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -45,10 +47,16 @@ export default function App() {
     scanDevices();
 
     if (window.electronAPI) {
-      const unsubscribe = window.electronAPI.onTelemetryUpdate((data) => {
+      const unsubTelemetry = window.electronAPI.onTelemetryUpdate((data) => {
         handleIncomingTelemetry(data);
       });
-      return () => unsubscribe();
+      const unsubDebug = window.electronAPI.onDebugLog((log) => {
+        setDebugLogs(prev => [...prev.slice(-100), log]);
+      });
+      return () => {
+        unsubTelemetry();
+        unsubDebug();
+      };
     }
   }, []);
 
@@ -64,14 +72,14 @@ export default function App() {
 
     setTelemetry(point);
 
-    if (!isPausedRef.current) {
+    if (!isPausedRef.current && point.hasValidData) {
       setHistory(prev => {
         const next = [...prev, point];
         return next.length > 2000 ? next.slice(next.length - 2000) : next;
       });
     }
 
-    if (isRecordingRef.current) {
+    if (isRecordingRef.current && point.hasValidData) {
       setRecordedData(prev => [...prev, point]);
     }
 
@@ -138,7 +146,7 @@ export default function App() {
       }
 
       try {
-        setStatusMsg("Connecting...");
+        setStatusMsg("Connecting & Scanning SMBus...");
         const res = await window.electronAPI.connectDevice(selectedDevice);
         setIsConnected(true);
         setStatusMsg("Connected (10Hz SMBus)");
@@ -160,7 +168,7 @@ export default function App() {
             <Activity size={24} color="#6366f1" />
           </div>
           <div>
-            <h1 className="brand-title">BQ_tester <span className="badge-v">Electron 60FPS</span></h1>
+            <h1 className="brand-title">BQ_tester <span className="badge-v">v2.0.4 Electron</span></h1>
             <p className="brand-subtitle">High-Speed Real-Time SMBus BQ40Z50 Debugger</p>
           </div>
         </div>
@@ -197,6 +205,30 @@ export default function App() {
       </header>
 
       <main className="main-content">
+        {isConnected && telemetry && !telemetry.hasValidData && (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.15)',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            color: '#fca5a5'
+          }}>
+            <ShieldAlert size={20} className="text-red" />
+            <div>
+              <strong>EV2400 USB Connected, but BQ40Z50 is not responding on SCL/SDA SMBus lines!</strong>
+              <div style={{ fontSize: '0.82rem', marginTop: '2px', color: '#94a3b8' }}>
+                1. Verify SCL (SmbClock), SDA (SmbData), and GND wires are properly attached to battery header.<br/>
+                2. If battery is sleeping (0V on PACK+), apply momentary charge voltage to wake up BQ40Z50.<br/>
+                3. Ensure Texas Instruments bqStudio.exe is completely closed.
+              </div>
+            </div>
+          </div>
+        )}
+
         <TelemetryCards telemetry={telemetry} activeAlerts={activeAlerts} />
 
         <ChartsSection
@@ -219,7 +251,10 @@ export default function App() {
             onClearBuffer={() => setRecordedData([])}
           />
         </div>
+
+        <DebugConsole logs={debugLogs} onClear={() => setDebugLogs([])} />
       </main>
     </div>
   );
 }
+

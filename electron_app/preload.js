@@ -8,5 +8,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const subscription = (_event, value) => callback(value);
     ipcRenderer.on('telemetry-update', subscription);
     return () => ipcRenderer.removeListener('telemetry-update', subscription);
+  },
+  onDebugLog: (callback) => {
+    const subscription = (_event, value) => callback(value);
+    ipcRenderer.on('debug-log', subscription);
+    return () => ipcRenderer.removeListener('debug-log', subscription);
   }
 });
