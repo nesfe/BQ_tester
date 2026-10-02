@@ -1,4 +1,4 @@
-name: Build and Release Windows Executable
+name: Build and Release Windows Applications
 
 on:
   push:
@@ -12,46 +12,42 @@ permissions:
   contents: write
 
 jobs:
-  build-windows-exe:
+  build-electron-windows:
     runs-on: windows-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          node-version: '20'
 
-      - name: Install Dependencies
+      - name: Install Electron Dependencies & Build Windows App
         run: |
-          python -m pip install --upgrade pip
-          pip install -r desktop_app/requirements.txt
+          cd electron_app
+          npm install
+          npm run build
+          npx electron-builder --windows
 
-      - name: Build Windows Executable with PyInstaller
-        run: |
-          cd desktop_app
-          pyinstaller --noconfirm --onefile --windowed --name "BQ_tester_Windows" --clean bq_tester_gui.py
-
-      - name: Upload Artifact
+      - name: Upload Electron EXE Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BQ_tester_Windows_EXE
-          path: desktop_app/dist/BQ_tester_Windows.exe
+          name: BQ_tester_Electron_Windows
+          path: electron_app/dist_electron/*.exe
 
-      - name: Create GitHub Release
+      - name: Release Electron EXE to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          files: desktop_app/dist/BQ_tester_Windows.exe
-          name: Release ${{ github.ref_name }}
+          files: electron_app/dist_electron/*.exe
+          name: Release ${{ github.ref_name }} (Electron High-Performance)
           body: |
-            ## BQ_tester Real-Time Battery Telemetry & Debugger
-            - Native Windows Standalone Executable (`BQ_tester_Windows.exe`).
-            - Supports direct out-of-the-box TI EV2400 / EV2300 USB HID adapters and COM serial ports.
-            - Real-time 10Hz graphs & millisecond precision safety trigger timeline.
+            ## BQ_tester v2.0 Electron High-Performance Windows Release
+            - **Native Electron App** (Zero Python UI lag, Chromium GPU 60FPS graph rendering).
+            - **`node-hid` Direct C++ USB Engine**: Asynchronous non-blocking EV2400 SMBus polling (PID 0x0037/0x0036).
+            - Supports direct out-of-the-box TI EV2400 / EV2300 USB HID adapters.
           draft: false
           prerelease: false
         env:
