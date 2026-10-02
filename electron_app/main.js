@@ -15,7 +15,11 @@ let mainWindow = null;
 let activeDevice = null;
 let pollingInterval = null;
 
-// Lock-in SMBus Parameters after Auto-Probe
+// Locked HID Write Buffer Size & Mode
+let lockedWriteSize = null;
+let lockedWriteMode = null;
+
+// Locked SMBus Protocol Parameters after Auto-Probe
 let workingHeader = 0x0B;
 let workingAddr = 0x16; // 8-bit write address
 let workingOffset = 2;  // Offset in HID response
@@ -65,6 +69,67 @@ function logToUI(msg, level = 'info') {
       level
     });
   }
+}
+
+// === Safe HID Write with Auto Buffer-Size Lock (Fixes Windows WriteFile 0x00000057 / ERROR_INVALID_PARAMETER) ===
+function safeWrite(device, reportId, payloadBytes) {
+  if (!device) return false;
+
+  const payload = Array.isArray(payloadBytes) ? payloadBytes : Array.from(payloadBytes);
+
+  // If we already locked in the working write buffer size and mode, use it directly!
+  if (lockedWriteSize && lockedWriteMode) {
+    const buf = new Uint8Array(lockedWriteSize);
+    buf[0] = reportId;
+    for (let i = 0; i < payload.length && (i + 1) < lockedWriteSize; i++) {
+      buf[i + 1] = payload[i];
+    }
+    const arr = Array.from(buf);
+    if (lockedWriteMode === 'write') {
+      device.write(arr);
+    } else {
+      device.sendFeatureReport(arr);
+    }
+    return true;
+  }
+
+  // Windows HID expects exact report lengths matching device descriptor (65, 64, 33, 17, 9)
+  const sizesToTry = [65, 64, 33, 17, 9];
+
+  for (const size of sizesToTry) {
+    try {
+      const buf = new Uint8Array(size);
+      buf[0] = reportId;
+      for (let i = 0; i < payload.length && (i + 1) < size; i++) {
+        buf[i + 1] = payload[i];
+      }
+      const arr = Array.from(buf);
+      device.write(arr);
+      lockedWriteSize = size;
+      lockedWriteMode = 'write';
+      logToUI(`✅ Locked HID Output Report Size: ${size} bytes (device.write)`, 'info');
+      return true;
+    } catch (e) {}
+  }
+
+  // Fallback to sendFeatureReport if Output Report is rejected
+  for (const size of sizesToTry) {
+    try {
+      const buf = new Uint8Array(size);
+      buf[0] = reportId;
+      for (let i = 0; i < payload.length && (i + 1) < size; i++) {
+        buf[i + 1] = payload[i];
+      }
+      const arr = Array.from(buf);
+      device.sendFeatureReport(arr);
+      lockedWriteSize = size;
+      lockedWriteMode = 'feature';
+      logToUI(`✅ Locked HID Feature Report Size: ${size} bytes (sendFeatureReport)`, 'info');
+      return true;
+    } catch (e) {}
+  }
+
+  throw new Error("Cannot write to HID device: WriteFile ERROR_INVALID_PARAMETER (0x57) on all report sizes.");
 }
 
 // === IPC Handlers ===
@@ -124,6 +189,8 @@ ipcMain.handle('connect-device', async (event, deviceInfo) => {
     try { activeDevice.close(); } catch(e) {}
     activeDevice = null;
   }
+  lockedWriteSize = null;
+  lockedWriteMode = null;
 
   if (!hidModule) {
     throw new Error("node-hid module unavailable.");
@@ -132,7 +199,7 @@ ipcMain.handle('connect-device', async (event, deviceInfo) => {
   try {
     let targetPath = deviceInfo.path;
 
-    // If AUTO_IF0 or FORCE, search for Interface 0 specifically
+    // Search for Interface 0 specifically if AUTO_IF0 or FORCE
     if (!targetPath || targetPath === "AUTO_IF0" || targetPath === "FORCE") {
       const devList = hidModule.devices();
       const match = devList.find(d => 
@@ -155,7 +222,7 @@ ipcMain.handle('connect-device', async (event, deviceInfo) => {
       logToUI(`Opened EV2400 by VID:0x${vid.toString(16)} PID:0x${pid.toString(16)}`, 'success');
     }
 
-    // Send EV2400 SMBus Clock & Pullup Config
+    // Send EV2400 SMBus Clock & Pullup Config using safeWrite
     initEV2400SMBus();
 
     // Probe SMBus headers, slave addresses, and response offsets
@@ -189,29 +256,15 @@ function initEV2400SMBus() {
   if (!activeDevice) return;
   try {
     // 1. Send EV2400 SMBus 100kHz clock init packet
-    const init1 = new Uint8Array(64);
-    init1[0] = 0x00;
-    init1[1] = 0x10; // SMBus clock config
-    init1[2] = 0x00; // 100kHz
-    init1[3] = 0x01;
-    activeDevice.write(Array.from(init1));
+    safeWrite(activeDevice, 0x00, [0x10, 0x00, 0x01]);
 
     // 2. Enable EV2400 3.3V internal SMBus pullup resistors
-    const init2 = new Uint8Array(64);
-    init2[0] = 0x00;
-    init2[1] = 0x2C;
-    init2[2] = 0x01;
-    init2[3] = 0x01;
-    activeDevice.write(Array.from(init2));
+    safeWrite(activeDevice, 0x00, [0x2C, 0x01, 0x01]);
 
     // 3. Enable Port Power
-    const init3 = new Uint8Array(64);
-    init3[0] = 0x00;
-    init3[1] = 0x01;
-    init3[2] = 0x01;
-    activeDevice.write(Array.from(init3));
+    safeWrite(activeDevice, 0x00, [0x01, 0x01, 0x01]);
 
-    logToUI('EV2400 SMBus Port Configured (100kHz Clock, Internal Pullups ENABLED)', 'info');
+    logToUI('✅ EV2400 SMBus Port Configured (100kHz Clock, Internal Pullups ENABLED)', 'success');
   } catch(e) {
     logToUI(`EV2400 Init Warning: ${e.message}`, 'warning');
   }
@@ -266,16 +319,19 @@ function probeProtocol() {
 function rawReadWord(regCmd, hdr = workingHeader, addr = workingAddr, offset = workingOffset, endian = workingEndian) {
   if (!activeDevice) return null;
 
-  const pkt = new Uint8Array(64);
-  pkt[0] = 0x00;           // Report ID
-  pkt[1] = hdr;            // Header
-  pkt[2] = addr & 0xFF;    // Slave Address
-  pkt[3] = regCmd & 0xFF;  // Register Command
-  pkt[4] = 0x02;           // Requested Length (2 bytes)
+  // Flush stale reports from node-hid internal queue before sending new request
+  try {
+    let dummy;
+    let limit = 0;
+    do {
+      dummy = activeDevice.readTimeout(2);
+      limit++;
+    } while (dummy && dummy.length > 0 && limit < 10);
+  } catch(e) {}
 
   try {
-    activeDevice.write(Array.from(pkt));
-    const res = activeDevice.readTimeout(100);
+    safeWrite(activeDevice, 0x00, [hdr & 0xFF, addr & 0xFF, regCmd & 0xFF, 0x02]);
+    const res = activeDevice.readTimeout(120);
 
     if (res && res.length > (offset + 1)) {
       // Check for error/NACK status bytes
@@ -334,4 +390,5 @@ function pollTelemetry() {
 
   mainWindow.webContents.send('telemetry-update', telemetry);
 }
+
 

@@ -1,6 +1,6 @@
 {
   "name": "bq-tester-electron",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "High-Performance Real-Time BQ40Z50 Battery Telemetry & Debugger",
   "author": "nesfe",
   "repository": {
