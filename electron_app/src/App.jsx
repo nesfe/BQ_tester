@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Activity, RefreshCw, Play, Download, ShieldAlert, Cpu } from 'lucide-react';
-import { TelemetryCards } from '../../web_app/src/components/TelemetryCards';
-import { ChartsSection } from '../../web_app/src/components/ChartsSection';
-import { CellBreakdown } from '../../web_app/src/components/CellBreakdown';
-import { StatusTimeline } from '../../web_app/src/components/StatusTimeline';
-import { RegisterInspector } from '../../web_app/src/components/RegisterInspector';
-import { DataExporter } from '../../web_app/src/components/DataExporter';
+import { TelemetryCards } from './components/TelemetryCards';
+import { ChartsSection } from './components/ChartsSection';
+import { CellBreakdown } from './components/CellBreakdown';
+import { StatusTimeline } from './components/StatusTimeline';
+import { RegisterInspector } from './components/RegisterInspector';
+import { DataExporter } from './components/DataExporter';
 import { SAFETY_STATUS_FLAGS, OPERATION_STATUS_FLAGS } from './utils/smbus_definitions';
 
 export default function App() {
@@ -27,7 +27,6 @@ export default function App() {
   const isRecordingRef = useRef(isRecording);
   isRecordingRef.current = isRecording;
 
-  // Initial scan for USB HID devices
   const scanDevices = async () => {
     if (window.electronAPI) {
       try {
@@ -45,7 +44,6 @@ export default function App() {
   useEffect(() => {
     scanDevices();
 
-    // Subscribe to high-speed IPC telemetry stream from Electron Main Process
     if (window.electronAPI) {
       const unsubscribe = window.electronAPI.onTelemetryUpdate((data) => {
         handleIncomingTelemetry(data);
