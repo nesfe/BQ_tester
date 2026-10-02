@@ -1,0 +1,58 @@
+name: Build and Release Windows Executable
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r desktop_app/requirements.txt
+
+      - name: Build Windows Executable with PyInstaller
+        run: |
+          cd desktop_app
+          pyinstaller --noconfirm --onefile --windowed --name "BQ_tester_Windows" --clean bq_tester_gui.py
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BQ_tester_Windows_EXE
+          path: desktop_app/dist/BQ_tester_Windows.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: desktop_app/dist/BQ_tester_Windows.exe
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## BQ_tester Real-Time Battery Telemetry & Debugger
+            - Native Windows Standalone Executable (`BQ_tester_Windows.exe`).
+            - Supports direct out-of-the-box TI EV2400 / EV2300 USB HID adapters and COM serial ports.
+            - Real-time 10Hz graphs & millisecond precision safety trigger timeline.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

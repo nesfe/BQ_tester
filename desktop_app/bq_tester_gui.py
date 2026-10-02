@@ -2,15 +2,13 @@
 """
 BQ_tester Windows Desktop Application (PyQt6 + PyQtGraph)
 Real-time SMBus Telemetry & Safety Status Debugger for BQ40Z50-R5
-Supports Direct Out-of-the-Box TI EV2400 / EV2300 USB Adapters & COM Ports
+Direct out-of-the-box hardware interface for TI EV2400 / EV2300 & COM Ports
 """
 
 import sys
 import json
 import time
 import csv
-import math
-import random
 from datetime import datetime
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
@@ -147,11 +145,18 @@ class EV2400ReaderThread(QThread):
         self.running = True
         try:
             self.adapter.open(self.path)
+            fail_count = 0
             while self.running:
                 telemetry = self.adapter.read_telemetry()
                 if telemetry:
+                    fail_count = 0
                     self.data_received.emit(telemetry)
-                time.sleep(0.1) # 10Hz sampling
+                else:
+                    fail_count += 1
+                    if fail_count > 20:
+                        self.error_occurred.emit("BQ40Z50 SMBus Read Error: Battery pack disconnected or EV2400 channel locked. Make sure TI bqStudio is closed.")
+                        break
+                time.sleep(0.1) # 10Hz polling rate
             self.adapter.close()
         except Exception as e:
             self.error_occurred.emit(str(e))
@@ -191,58 +196,13 @@ class SerialReaderThread(QThread):
         self.running = False
         self.wait()
 
-class BQSimEngine:
-    def __init__(self):
-        self.soc = 85.0
-        self.current_ma = -2400
-        self.sf = 0
-        self.op = 0x0007
-        self.tick = 0
-
-    def get_step(self):
-        self.tick += 1
-        noise = (random.random() - 0.5) * 120
-        cur = self.current_ma + noise
-
-        if self.tick % 100 > 70:
-            cur = -8200
-            self.sf |= (1 << 3)
-        else:
-            self.sf &= ~(1 << 3)
-
-        self.soc = max(0, min(100, self.soc + (cur / 3600.0) * 0.1 / 45.0))
-        base_v = 3300 + (self.soc / 100.0) * 850 + (cur / 1000.0) * 15
-
-        c1 = int(base_v + 10 + random.randint(-3, 3))
-        c2 = int(base_v + 5 + random.randint(-3, 3))
-        c3 = int(base_v - 15 + random.randint(-3, 3))
-        c4 = int(base_v + 8 + random.randint(-3, 3))
-
-        total_v = c1 + c2 + c3 + c4
-        temp = int((25.0 + (abs(cur)/5000.0)*10.0) * 10)
-
-        return {
-            "type": "telemetry",
-            "v": total_v,
-            "i": int(cur),
-            "c1": c1, "c2": c2, "c3": c3, "c4": c4,
-            "soc": int(self.soc),
-            "temp": temp,
-            "sf": self.sf,
-            "op": self.op
-        }
-
 class BQTesterMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("BQ_tester — BQ40Z50-R5 Real-Time Battery Debugger (Out-of-the-Box TI EV2400/EV2300)")
+        self.setWindowTitle("BQ_tester — BQ40Z50-R5 Real-Time Battery Debugger (TI EV2400 / EV2300 Direct)")
         self.resize(1400, 900)
 
         self.worker_thread = None
-        self.sim_engine = BQSimEngine()
-        self.sim_timer = QTimer()
-        self.sim_timer.timeout.connect(self.on_sim_tick)
-
         self.history_len = 300
         self.time_data = []
         self.current_data = []
@@ -265,7 +225,7 @@ class BQTesterMainWindow(QMainWindow):
         # 1. Top Control Toolbar
         toolbar_layout = QHBoxLayout()
 
-        toolbar_layout.addWidget(QLabel("Hardware / Interface:"))
+        toolbar_layout.addWidget(QLabel("Hardware Interface:"))
         self.hardware_combo = QComboBox()
         toolbar_layout.addWidget(self.hardware_combo)
 
@@ -291,6 +251,11 @@ class BQTesterMainWindow(QMainWindow):
         toolbar_layout.addStretch()
         main_layout.addLayout(toolbar_layout)
 
+        # Notice label for bqStudio conflict
+        self.notice_label = QLabel("⚠️ Note: If TI Battery Management Studio (bqStudio) is open, close it so BQ_tester can access the EV2400 USB device.")
+        self.notice_label.setStyleSheet("color: #f59e0b; font-weight: bold; margin-bottom: 4px;")
+        main_layout.addWidget(self.notice_label)
+
         # 2. Metric Cards Row
         cards_layout = QHBoxLayout()
         self.card_current = self.create_card("Pack Current", "0.00 A", "#6366f1")
@@ -298,7 +263,7 @@ class BQTesterMainWindow(QMainWindow):
         self.card_soc = self.create_card("State of Charge", "0 %", "#06b6d4")
         self.card_delta = self.create_card("Cell ΔV Imbalance", "0 mV", "#f59e0b")
         self.card_temp = self.create_card("Temperature", "0.0 °C", "#10b981")
-        self.card_alerts = self.create_card("Safety Status", "NORMAL", "#ef4444")
+        self.card_alerts = self.create_card("Safety Status", "NO HARDWARE", "#ef4444")
 
         cards_layout.addWidget(self.card_current["group"])
         cards_layout.addWidget(self.card_voltage["group"])
@@ -378,19 +343,19 @@ class BQTesterMainWindow(QMainWindow):
 
     def scan_hardware(self):
         self.hardware_combo.clear()
-        
+
         # 1. Scan for TI EV2400 / EV2300 USB HID Adapters
         ev_adapters = TIEV2400Adapter.detect_adapters()
         for adp in ev_adapters:
-            self.hardware_combo.addItem(f"🔌 {adp['name']} [Direct Out-of-the-Box]", {"type": "EV2400", "path": adp['path']})
+            self.hardware_combo.addItem(f"🔌 {adp['name']}", {"type": "EV2400", "path": adp['path']})
 
         # 2. Scan for Serial COM ports
         ports = serial.tools.list_ports.comports()
         for p in ports:
             self.hardware_combo.addItem(f"💻 Serial Port: {p.device} ({p.description})", {"type": "SERIAL", "port": p.device})
 
-        # 3. Add Built-in Simulator
-        self.hardware_combo.addItem("⚙️ Built-in Battery Simulator Mode", {"type": "SIM"})
+        if self.hardware_combo.count() == 0:
+            self.hardware_combo.addItem("⚠️ No EV2400 or COM Devices Detected", None)
 
     def toggle_connection(self):
         if self.worker_thread and self.worker_thread.isRunning():
@@ -401,19 +366,14 @@ class BQTesterMainWindow(QMainWindow):
             self.setStyleSheet(DARK_QSS)
             return
 
-        if self.sim_timer.isActive():
-            self.sim_timer.stop()
-
         target_data = self.hardware_combo.currentData()
         if not target_data:
+            QMessageBox.warning(self, "Hardware Selection", "Please connect a TI EV2400 or COM device and click 'Scan Hardware'.")
             return
 
         mode_type = target_data.get("type")
 
-        if mode_type == "SIM":
-            self.sim_timer.start(100)
-            self.connect_btn.setText("Simulator Active")
-        elif mode_type == "EV2400":
+        if mode_type == "EV2400":
             path = target_data.get("path")
             self.worker_thread = EV2400ReaderThread(path)
             self.worker_thread.data_received.connect(self.process_telemetry)
@@ -433,17 +393,13 @@ class BQTesterMainWindow(QMainWindow):
             self.setStyleSheet(DARK_QSS)
 
     def on_device_error(self, err):
-        QMessageBox.critical(self, "Hardware Connection Error", f"Connection error: {err}")
+        QMessageBox.critical(self, "Hardware Error", f"{err}\n\nTroubleshooting:\n1. Make sure TI bqStudio / Battery Management Studio is CLOSED.\n2. Verify SCL/SDA/GND wires are attached securely to your BQ40Z50 board.")
         if self.worker_thread:
             self.worker_thread.stop()
             self.worker_thread = None
         self.connect_btn.setText("Connect Device")
         self.connect_btn.setObjectName("connectBtn")
         self.setStyleSheet(DARK_QSS)
-
-    def on_sim_tick(self):
-        data = self.sim_engine.get_step()
-        self.process_telemetry(data)
 
     def process_telemetry(self, data):
         now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
