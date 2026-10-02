@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 BQ_tester Windows Desktop Application (PyQt6 + PyQtGraph)
-Real-time SMBus Telemetry & Safety Status Debugger for BQ40Z50-R5 with MSP430
+Real-time SMBus Telemetry & Safety Status Debugger for BQ40Z50-R5
+Supports Direct Out-of-the-Box TI EV2400 / EV2300 USB Adapters & COM Ports
 """
 
 import sys
@@ -18,11 +19,13 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QGroupBox, QSplitter, QFileDialog, QMessageBox
 )
-from PyQt6.QtGui import QFont, QColor, QIcon
+from PyQt6.QtGui import QFont, QColor
 
 import pyqtgraph as pg
 import serial
 import serial.tools.list_ports
+
+from ev2400_driver import TIEV2400Adapter, HAS_HID
 
 # Dark Professional QSS Theme
 DARK_QSS = """
@@ -130,14 +133,32 @@ SAFETY_FLAGS = [
     (15, "UTC", "Undertemp Charge")
 ]
 
-OPERATION_FLAGS = [
-    (0, "PRES", "System Present"),
-    (1, "DSG", "Discharge FET ON"),
-    (2, "CHG", "Charge FET ON"),
-    (3, "PCHG", "Pre-charge FET ON"),
-    (4, "FUSE", "Fuse Blown"),
-    (5, "CB", "Cell Balancing Active")
-]
+class EV2400ReaderThread(QThread):
+    data_received = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, path=None):
+        super().__init__()
+        self.path = path
+        self.adapter = TIEV2400Adapter()
+        self.running = False
+
+    def run(self):
+        self.running = True
+        try:
+            self.adapter.open(self.path)
+            while self.running:
+                telemetry = self.adapter.read_telemetry()
+                if telemetry:
+                    self.data_received.emit(telemetry)
+                time.sleep(0.1) # 10Hz sampling
+            self.adapter.close()
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+    def stop(self):
+        self.running = False
+        self.wait()
 
 class SerialReaderThread(QThread):
     data_received = pyqtSignal(dict)
@@ -183,10 +204,9 @@ class BQSimEngine:
         noise = (random.random() - 0.5) * 120
         cur = self.current_ma + noise
 
-        # Cycle modes
         if self.tick % 100 > 70:
-            cur = -8200 # Pulse high current
-            self.sf |= (1 << 3) # OCD flag
+            cur = -8200
+            self.sf |= (1 << 3)
         else:
             self.sf &= ~(1 << 3)
 
@@ -195,7 +215,7 @@ class BQSimEngine:
 
         c1 = int(base_v + 10 + random.randint(-3, 3))
         c2 = int(base_v + 5 + random.randint(-3, 3))
-        c3 = int(base_v - 15 + random.randint(-3, 3)) # Imbalance
+        c3 = int(base_v - 15 + random.randint(-3, 3))
         c4 = int(base_v + 8 + random.randint(-3, 3))
 
         total_v = c1 + c2 + c3 + c4
@@ -215,10 +235,10 @@ class BQSimEngine:
 class BQTesterMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("BQ_tester — BQ40Z50-R5 Real-Time Battery Debugger (Windows)")
+        self.setWindowTitle("BQ_tester — BQ40Z50-R5 Real-Time Battery Debugger (Out-of-the-Box TI EV2400/EV2300)")
         self.resize(1400, 900)
 
-        self.serial_thread = None
+        self.worker_thread = None
         self.sim_engine = BQSimEngine()
         self.sim_timer = QTimer()
         self.sim_timer.timeout.connect(self.on_sim_tick)
@@ -235,7 +255,7 @@ class BQTesterMainWindow(QMainWindow):
         self.prev_op = 0
 
         self.init_ui()
-        self.scan_com_ports()
+        self.scan_hardware()
 
     def init_ui(self):
         central = QWidget()
@@ -245,21 +265,15 @@ class BQTesterMainWindow(QMainWindow):
         # 1. Top Control Toolbar
         toolbar_layout = QHBoxLayout()
 
-        toolbar_layout.addWidget(QLabel("Mode:"))
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Simulation Mode", "Hardware MSP430 Serial Port"])
-        self.mode_combo.currentIndexChanged.connect(self.on_mode_change)
-        toolbar_layout.addWidget(self.mode_combo)
+        toolbar_layout.addWidget(QLabel("Hardware / Interface:"))
+        self.hardware_combo = QComboBox()
+        toolbar_layout.addWidget(self.hardware_combo)
 
-        toolbar_layout.addWidget(QLabel("Port:"))
-        self.port_combo = QComboBox()
-        toolbar_layout.addWidget(self.port_combo)
-
-        self.refresh_ports_btn = QPushButton("Refresh")
-        self.refresh_ports_btn.clicked.connect(self.scan_com_ports)
+        self.refresh_ports_btn = QPushButton("🔄 Scan Hardware")
+        self.refresh_ports_btn.clicked.connect(self.scan_hardware)
         toolbar_layout.addWidget(self.refresh_ports_btn)
 
-        self.connect_btn = QPushButton("Connect Serial")
+        self.connect_btn = QPushButton("Connect Device")
         self.connect_btn.setObjectName("connectBtn")
         self.connect_btn.clicked.connect(self.toggle_connection)
         toolbar_layout.addWidget(self.connect_btn)
@@ -279,7 +293,6 @@ class BQTesterMainWindow(QMainWindow):
 
         # 2. Metric Cards Row
         cards_layout = QHBoxLayout()
-
         self.card_current = self.create_card("Pack Current", "0.00 A", "#6366f1")
         self.card_voltage = self.create_card("Total Voltage", "0.00 V", "#3b82f6")
         self.card_soc = self.create_card("State of Charge", "0 %", "#06b6d4")
@@ -353,9 +366,6 @@ class BQTesterMainWindow(QMainWindow):
         bottom_layout.addWidget(timeline_group, stretch=2)
         main_layout.addLayout(bottom_layout, stretch=1)
 
-        # Start default in Sim mode
-        self.sim_timer.start(100)
-
     def create_card(self, title, value, color):
         group = QGroupBox(title)
         layout = QVBoxLayout(group)
@@ -366,48 +376,70 @@ class BQTesterMainWindow(QMainWindow):
         layout.addWidget(val_label)
         return {"group": group, "label": val_label}
 
-    def scan_com_ports(self):
-        self.port_combo.clear()
+    def scan_hardware(self):
+        self.hardware_combo.clear()
+        
+        # 1. Scan for TI EV2400 / EV2300 USB HID Adapters
+        ev_adapters = TIEV2400Adapter.detect_adapters()
+        for adp in ev_adapters:
+            self.hardware_combo.addItem(f"🔌 {adp['name']} [Direct Out-of-the-Box]", {"type": "EV2400", "path": adp['path']})
+
+        # 2. Scan for Serial COM ports
         ports = serial.tools.list_ports.comports()
         for p in ports:
-            self.port_combo.addItem(f"{p.device} ({p.description})", p.device)
-        if not ports:
-            self.port_combo.addItem("No COM Ports Found", "")
+            self.hardware_combo.addItem(f"💻 Serial Port: {p.device} ({p.description})", {"type": "SERIAL", "port": p.device})
 
-    def on_mode_change(self, idx):
-        if idx == 0: # Sim mode
-            if self.serial_thread:
-                self.serial_thread.stop()
-                self.serial_thread = None
-            self.sim_timer.start(100)
-            self.connect_btn.setEnabled(False)
-        else:
-            self.sim_timer.stop()
-            self.connect_btn.setEnabled(True)
+        # 3. Add Built-in Simulator
+        self.hardware_combo.addItem("⚙️ Built-in Battery Simulator Mode", {"type": "SIM"})
 
     def toggle_connection(self):
-        if self.serial_thread and self.serial_thread.isRunning():
-            self.serial_thread.stop()
-            self.serial_thread = None
-            self.connect_btn.setText("Connect Serial")
+        if self.worker_thread and self.worker_thread.isRunning():
+            self.worker_thread.stop()
+            self.worker_thread = None
+            self.connect_btn.setText("Connect Device")
             self.connect_btn.setObjectName("connectBtn")
             self.setStyleSheet(DARK_QSS)
-        else:
-            port = self.port_combo.currentData()
-            if not port:
-                QMessageBox.warning(self, "Port Error", "Please select a valid COM port!")
-                return
-            self.serial_thread = SerialReaderThread(port)
-            self.serial_thread.data_received.connect(self.process_telemetry)
-            self.serial_thread.error_occurred.connect(self.on_serial_error)
-            self.serial_thread.start()
+            return
+
+        if self.sim_timer.isActive():
+            self.sim_timer.stop()
+
+        target_data = self.hardware_combo.currentData()
+        if not target_data:
+            return
+
+        mode_type = target_data.get("type")
+
+        if mode_type == "SIM":
+            self.sim_timer.start(100)
+            self.connect_btn.setText("Simulator Active")
+        elif mode_type == "EV2400":
+            path = target_data.get("path")
+            self.worker_thread = EV2400ReaderThread(path)
+            self.worker_thread.data_received.connect(self.process_telemetry)
+            self.worker_thread.error_occurred.connect(self.on_device_error)
+            self.worker_thread.start()
+            self.connect_btn.setText("Disconnect EV2400")
+            self.connect_btn.setObjectName("disconnectBtn")
+            self.setStyleSheet(DARK_QSS)
+        elif mode_type == "SERIAL":
+            port = target_data.get("port")
+            self.worker_thread = SerialReaderThread(port)
+            self.worker_thread.data_received.connect(self.process_telemetry)
+            self.worker_thread.error_occurred.connect(self.on_device_error)
+            self.worker_thread.start()
             self.connect_btn.setText("Disconnect Serial")
             self.connect_btn.setObjectName("disconnectBtn")
             self.setStyleSheet(DARK_QSS)
 
-    def on_serial_error(self, err):
-        QMessageBox.critical(self, "Serial Error", f"Serial connection error: {err}")
-        self.toggle_connection()
+    def on_device_error(self, err):
+        QMessageBox.critical(self, "Hardware Connection Error", f"Connection error: {err}")
+        if self.worker_thread:
+            self.worker_thread.stop()
+            self.worker_thread = None
+        self.connect_btn.setText("Connect Device")
+        self.connect_btn.setObjectName("connectBtn")
+        self.setStyleSheet(DARK_QSS)
 
     def on_sim_tick(self):
         data = self.sim_engine.get_step()
