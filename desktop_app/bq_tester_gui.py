@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QGroupBox, QSplitter, QFileDialog, QMessageBox
+    QHeaderView, QProgressBar, QGroupBox, QSplitter, QFileDialog, QMessageBox, QDialog, QTextEdit
 )
 from PyQt6.QtGui import QFont, QColor
 
@@ -135,16 +135,16 @@ class EV2400ReaderThread(QThread):
     data_received = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, path=None):
+    def __init__(self, device_info):
         super().__init__()
-        self.path = path
+        self.device_info = device_info
         self.adapter = TIEV2400Adapter()
         self.running = False
 
     def run(self):
         self.running = True
         try:
-            self.adapter.open(self.path)
+            self.adapter.open(self.device_info)
             fail_count = 0
             while self.running:
                 telemetry = self.adapter.read_telemetry()
@@ -153,10 +153,10 @@ class EV2400ReaderThread(QThread):
                     self.data_received.emit(telemetry)
                 else:
                     fail_count += 1
-                    if fail_count > 20:
-                        self.error_occurred.emit("BQ40Z50 SMBus Read Error: Battery pack disconnected or EV2400 channel locked. Make sure TI bqStudio is closed.")
+                    if fail_count > 30:
+                        self.error_occurred.emit("BQ40Z50 Read Timeout: Check wires SCL/SDA/GND or close TI bqStudio.")
                         break
-                time.sleep(0.1) # 10Hz polling rate
+                time.sleep(0.1)
             self.adapter.close()
         except Exception as e:
             self.error_occurred.emit(str(e))
@@ -196,10 +196,58 @@ class SerialReaderThread(QThread):
         self.running = False
         self.wait()
 
+class DiagnosticDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("USB Hardware Diagnostic Scanner")
+        self.resize(700, 500)
+        layout = QVBoxLayout(self)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setFont(QFont("Consolas", 10))
+
+        report = "=== BQ_tester USB Hardware Diagnostic Report ===\n\n"
+        report += f"Python Version: {sys.version}\n"
+        report += f"HIDAPI Module Available: {HAS_HID}\n\n"
+
+        if HAS_HID:
+            try:
+                import hid
+                devs = hid.enumerate(0, 0)
+                report += f"Total USB HID Devices Found: {len(devs)}\n"
+                report += "-" * 65 + "\n"
+                for i, d in enumerate(devs):
+                    vid = d.get('vendor_id', 0)
+                    pid = d.get('product_id', 0)
+                    mfg = d.get('manufacturer_string', '')
+                    prod = d.get('product_string', '')
+                    iface = d.get('interface_number', -1)
+                    path = d.get('path', b'').decode('utf-8', errors='ignore') if isinstance(d.get('path'), bytes) else str(d.get('path', ''))
+
+                    highlight = "  <-- TARGET DEVICE!" if vid == 0x0451 or "EV2400" in prod.upper() or "EV2300" in prod.upper() else ""
+                    report += f"[{i+1}] VID: 0x{vid:04X} | PID: 0x{pid:04X} | IF: {iface} | {mfg} - {prod}{highlight}\n"
+                    report += f"     Path: {path}\n\n"
+            except Exception as e:
+                report += f"Error scanning HID: {e}\n"
+        else:
+            report += "⚠️ hidapi package is missing. Run `pip install hidapi` to enable EV2400 direct USB connectivity.\n"
+
+        report += "\n=== COM Serial Ports ===\n"
+        ports = serial.tools.list_ports.comports()
+        for p in ports:
+            report += f"Port: {p.device} | Description: {p.description} | HWID: {p.hwid}\n"
+
+        text.setText(report)
+        layout.addWidget(text)
+        btn = QPushButton("Close")
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn)
+
 class BQTesterMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("BQ_tester — BQ40Z50-R5 Real-Time Battery Debugger (TI EV2400 / EV2300 Direct)")
+        self.setWindowTitle("BQ_tester — BQ40Z50-R5 Real-Time Battery Debugger (Direct Hardware Interface)")
         self.resize(1400, 900)
 
         self.worker_thread = None
@@ -225,13 +273,17 @@ class BQTesterMainWindow(QMainWindow):
         # 1. Top Control Toolbar
         toolbar_layout = QHBoxLayout()
 
-        toolbar_layout.addWidget(QLabel("Hardware Interface:"))
+        toolbar_layout.addWidget(QLabel("Hardware Device:"))
         self.hardware_combo = QComboBox()
         toolbar_layout.addWidget(self.hardware_combo)
 
-        self.refresh_ports_btn = QPushButton("🔄 Scan Hardware")
+        self.refresh_ports_btn = QPushButton("🔄 Refresh")
         self.refresh_ports_btn.clicked.connect(self.scan_hardware)
         toolbar_layout.addWidget(self.refresh_ports_btn)
+
+        self.diag_btn = QPushButton("🔍 Diagnostic Scan")
+        self.diag_btn.clicked.connect(self.open_diagnostic)
+        toolbar_layout.addWidget(self.diag_btn)
 
         self.connect_btn = QPushButton("Connect Device")
         self.connect_btn.setObjectName("connectBtn")
@@ -252,7 +304,7 @@ class BQTesterMainWindow(QMainWindow):
         main_layout.addLayout(toolbar_layout)
 
         # Notice label for bqStudio conflict
-        self.notice_label = QLabel("⚠️ Note: If TI Battery Management Studio (bqStudio) is open, close it so BQ_tester can access the EV2400 USB device.")
+        self.notice_label = QLabel("⚠️ Important: Close TI Battery Management Studio (bqStudio) before connecting so Windows unlocks the EV2400 USB port.")
         self.notice_label.setStyleSheet("color: #f59e0b; font-weight: bold; margin-bottom: 4px;")
         main_layout.addWidget(self.notice_label)
 
@@ -341,21 +393,22 @@ class BQTesterMainWindow(QMainWindow):
         layout.addWidget(val_label)
         return {"group": group, "label": val_label}
 
+    def open_diagnostic(self):
+        diag = DiagnosticDialog(self)
+        diag.exec()
+
     def scan_hardware(self):
         self.hardware_combo.clear()
 
-        # 1. Scan for TI EV2400 / EV2300 USB HID Adapters
-        ev_adapters = TIEV2400Adapter.detect_adapters()
-        for adp in ev_adapters:
-            self.hardware_combo.addItem(f"🔌 {adp['name']}", {"type": "EV2400", "path": adp['path']})
+        # 1. Scan for USB HID Devices & TI Native Driver
+        devices = TIEV2400Adapter.detect_all_devices()
+        for d in devices:
+            self.hardware_combo.addItem(d['name'], d)
 
         # 2. Scan for Serial COM ports
         ports = serial.tools.list_ports.comports()
         for p in ports:
             self.hardware_combo.addItem(f"💻 Serial Port: {p.device} ({p.description})", {"type": "SERIAL", "port": p.device})
-
-        if self.hardware_combo.count() == 0:
-            self.hardware_combo.addItem("⚠️ No EV2400 or COM Devices Detected", None)
 
     def toggle_connection(self):
         if self.worker_thread and self.worker_thread.isRunning():
@@ -368,21 +421,12 @@ class BQTesterMainWindow(QMainWindow):
 
         target_data = self.hardware_combo.currentData()
         if not target_data:
-            QMessageBox.warning(self, "Hardware Selection", "Please connect a TI EV2400 or COM device and click 'Scan Hardware'.")
+            QMessageBox.warning(self, "Hardware Selection", "Please connect your TI EV2400 or COM programmer and click 'Refresh'.")
             return
 
         mode_type = target_data.get("type")
 
-        if mode_type == "EV2400":
-            path = target_data.get("path")
-            self.worker_thread = EV2400ReaderThread(path)
-            self.worker_thread.data_received.connect(self.process_telemetry)
-            self.worker_thread.error_occurred.connect(self.on_device_error)
-            self.worker_thread.start()
-            self.connect_btn.setText("Disconnect EV2400")
-            self.connect_btn.setObjectName("disconnectBtn")
-            self.setStyleSheet(DARK_QSS)
-        elif mode_type == "SERIAL":
+        if mode_type == "SERIAL":
             port = target_data.get("port")
             self.worker_thread = SerialReaderThread(port)
             self.worker_thread.data_received.connect(self.process_telemetry)
@@ -391,9 +435,17 @@ class BQTesterMainWindow(QMainWindow):
             self.connect_btn.setText("Disconnect Serial")
             self.connect_btn.setObjectName("disconnectBtn")
             self.setStyleSheet(DARK_QSS)
+        else:
+            self.worker_thread = EV2400ReaderThread(target_data)
+            self.worker_thread.data_received.connect(self.process_telemetry)
+            self.worker_thread.error_occurred.connect(self.on_device_error)
+            self.worker_thread.start()
+            self.connect_btn.setText("Disconnect Device")
+            self.connect_btn.setObjectName("disconnectBtn")
+            self.setStyleSheet(DARK_QSS)
 
     def on_device_error(self, err):
-        QMessageBox.critical(self, "Hardware Error", f"{err}\n\nTroubleshooting:\n1. Make sure TI bqStudio / Battery Management Studio is CLOSED.\n2. Verify SCL/SDA/GND wires are attached securely to your BQ40Z50 board.")
+        QMessageBox.critical(self, "Hardware Connection Error", f"{err}\n\nTroubleshooting Steps:\n1. Ensure TI bqStudio (Battery Management Studio) is CLOSED.\n2. Click '🔍 Diagnostic Scan' to inspect detected USB devices.")
         if self.worker_thread:
             self.worker_thread.stop()
             self.worker_thread = None
