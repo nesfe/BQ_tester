@@ -41,9 +41,7 @@ jobs:
       - name: Build Electron Windows Package (.exe)
         run: |
           cd electron_app
-          npx electron-builder --windows
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npx electron-builder --windows --publish never
 
       - name: Upload Electron EXE Artifact
         uses: actions/upload-artifact@v4
@@ -58,7 +56,7 @@ jobs:
           files: electron_app/dist_electron/*.exe
           name: Release ${{ github.ref_name }} (Electron High-Performance)
           body: |
-            ## BQ_tester v2.0.1 Electron High-Performance Windows Release
+            ## BQ_tester v2.0.3 Electron High-Performance Windows Release
             - **Native Electron App** (Zero Python UI lag, Chromium GPU 60FPS graph rendering).
             - **`node-hid` Direct C++ USB Engine**: Asynchronous non-blocking EV2400 SMBus polling (PID 0x0037/0x0036).
             - Supports direct out-of-the-box TI EV2400 / EV2300 USB HID adapters.
