@@ -18,6 +18,7 @@ let pollingInterval = null;
 // Locked HID Write Buffer Size & Mode
 let lockedWriteSize = null;
 let lockedWriteMode = null;
+let lockedPrependZero = null;
 
 // Locked SMBus Protocol Parameters after Auto-Probe
 let workingHeader = 0x0B;
@@ -71,18 +72,22 @@ function logToUI(msg, level = 'info') {
   }
 }
 
-// === Safe HID Write with Auto Buffer-Size Lock (Fixes Windows WriteFile 0x00000057 / ERROR_INVALID_PARAMETER) ===
+// === Safe HID Write with 48-Combination Auto Buffer Sizing & Mode Lock ===
 function safeWrite(device, reportId, payloadBytes) {
   if (!device) return false;
 
   const payload = Array.isArray(payloadBytes) ? payloadBytes : Array.from(payloadBytes);
 
-  // If we already locked in the working write buffer size and mode, use it directly!
-  if (lockedWriteSize && lockedWriteMode) {
+  // If already locked, execute direct payload formatting
+  if (lockedWriteSize !== null && lockedWriteMode !== null && lockedPrependZero !== null) {
     const buf = new Uint8Array(lockedWriteSize);
-    buf[0] = reportId;
-    for (let i = 0; i < payload.length && (i + 1) < lockedWriteSize; i++) {
-      buf[i + 1] = payload[i];
+    let startIdx = 0;
+    if (lockedPrependZero) {
+      buf[0] = reportId;
+      startIdx = 1;
+    }
+    for (let i = 0; i < payload.length && (i + startIdx) < lockedWriteSize; i++) {
+      buf[i + startIdx] = payload[i];
     }
     const arr = Array.from(buf);
     if (lockedWriteMode === 'write') {
@@ -93,43 +98,60 @@ function safeWrite(device, reportId, payloadBytes) {
     return true;
   }
 
-  // Windows HID expects exact report lengths matching device descriptor (65, 64, 33, 17, 9)
-  const sizesToTry = [65, 64, 33, 17, 9];
+  // Probe 48-combination matrix across mode, zero-prefix, and sizes
+  const modes = ['write', 'feature'];
+  const prependZeros = [true, false];
+  const sizes = [65, 64, 63, 33, 32, 17, 16, 9, 8, 5, 4, 3];
 
-  for (const size of sizesToTry) {
-    try {
-      const buf = new Uint8Array(size);
-      buf[0] = reportId;
-      for (let i = 0; i < payload.length && (i + 1) < size; i++) {
-        buf[i + 1] = payload[i];
+  for (const mode of modes) {
+    for (const prependZero of prependZeros) {
+      for (const size of sizes) {
+        try {
+          const buf = new Uint8Array(size);
+          let startIdx = 0;
+          if (prependZero) {
+            buf[0] = reportId;
+            startIdx = 1;
+          }
+          for (let i = 0; i < payload.length && (i + startIdx) < size; i++) {
+            buf[i + startIdx] = payload[i];
+          }
+          const arr = Array.from(buf);
+
+          if (mode === 'write') {
+            device.write(arr);
+          } else {
+            device.sendFeatureReport(arr);
+          }
+
+          lockedWriteSize = size;
+          lockedWriteMode = mode;
+          lockedPrependZero = prependZero;
+          logToUI(`🎉 LOCKED HID ENGINE! Mode: ${mode}, PrependZero: ${prependZero}, Size: ${size} bytes`, 'success');
+          return true;
+        } catch (e) {}
       }
-      const arr = Array.from(buf);
-      device.write(arr);
-      lockedWriteSize = size;
-      lockedWriteMode = 'write';
-      logToUI(`✅ Locked HID Output Report Size: ${size} bytes (device.write)`, 'info');
-      return true;
-    } catch (e) {}
+    }
   }
 
-  // Fallback to sendFeatureReport if Output Report is rejected
-  for (const size of sizesToTry) {
+  throw new Error("Cannot write to HID device: WriteFile ERROR_INVALID_PARAMETER (0x57) on all 48 report combinations.");
+}
+
+function safeRead(device, timeoutMs = 120) {
+  if (!device) return null;
+
+  if (lockedWriteMode === 'feature') {
     try {
-      const buf = new Uint8Array(size);
-      buf[0] = reportId;
-      for (let i = 0; i < payload.length && (i + 1) < size; i++) {
-        buf[i + 1] = payload[i];
-      }
-      const arr = Array.from(buf);
-      device.sendFeatureReport(arr);
-      lockedWriteSize = size;
-      lockedWriteMode = 'feature';
-      logToUI(`✅ Locked HID Feature Report Size: ${size} bytes (sendFeatureReport)`, 'info');
-      return true;
-    } catch (e) {}
+      const featRes = device.getFeatureReport(0x00, lockedWriteSize || 65);
+      if (featRes && featRes.length > 0) return featRes;
+    } catch(e) {}
   }
 
-  throw new Error("Cannot write to HID device: WriteFile ERROR_INVALID_PARAMETER (0x57) on all report sizes.");
+  try {
+    return device.readTimeout(timeoutMs);
+  } catch(e) {
+    return null;
+  }
 }
 
 // === IPC Handlers ===
@@ -191,6 +213,7 @@ ipcMain.handle('connect-device', async (event, deviceInfo) => {
   }
   lockedWriteSize = null;
   lockedWriteMode = null;
+  lockedPrependZero = null;
 
   if (!hidModule) {
     throw new Error("node-hid module unavailable.");
@@ -324,14 +347,14 @@ function rawReadWord(regCmd, hdr = workingHeader, addr = workingAddr, offset = w
     let dummy;
     let limit = 0;
     do {
-      dummy = activeDevice.readTimeout(2);
+      dummy = safeRead(activeDevice, 2);
       limit++;
     } while (dummy && dummy.length > 0 && limit < 10);
   } catch(e) {}
 
   try {
     safeWrite(activeDevice, 0x00, [hdr & 0xFF, addr & 0xFF, regCmd & 0xFF, 0x02]);
-    const res = activeDevice.readTimeout(120);
+    const res = safeRead(activeDevice, 120);
 
     if (res && res.length > (offset + 1)) {
       // Check for error/NACK status bytes
@@ -390,5 +413,6 @@ function pollTelemetry() {
 
   mainWindow.webContents.send('telemetry-update', telemetry);
 }
+
 
 
