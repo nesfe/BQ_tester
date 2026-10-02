@@ -16,9 +16,10 @@ class Session extends EventEmitter {
     if (this.connecting || this.bridge) throw new Error('Already connecting or connected');
     this.connecting = true;
     const generation = ++this.generation;
-    const bridge = this.createBridge();
-    this.bridge = bridge;
+    let bridge;
     try {
+      bridge = this.createBridge();
+      this.bridge = bridge;
       const info = await bridge.request('open', { device });
       if (generation !== this.generation) throw new Error('Connection cancelled');
       this.emit('state', { connected: true, message: 'Connected via TI CMAPI' });
@@ -29,7 +30,7 @@ class Session extends EventEmitter {
         this.bridge = null;
         this.emit('state', { connected: false, message: error.message });
       }
-      await bridge.close().catch(() => {});
+      if (bridge) await bridge.close().catch(() => {});
       throw error;
     } finally {
       this.connecting = false;

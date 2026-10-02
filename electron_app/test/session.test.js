@@ -70,3 +70,10 @@ test('loss of all telemetry disconnects and preserves hardware error', async () 
   assert.equal(closed, true);
   assert.equal(session.bridge, null);
 });
+
+test('bridge startup failure leaves connection retryable', async () => {
+  const session = new Session(() => { throw new Error('Unable to spawn bridge'); });
+  await assert.rejects(session.connect({}), /Unable to spawn/);
+  assert.equal(session.connecting, false);
+  assert.equal(session.bridge, null);
+});

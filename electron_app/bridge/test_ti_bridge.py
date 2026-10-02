@@ -133,7 +133,7 @@ class DiscoveryTests(unittest.TestCase):
                 (install / 'commmgr.exe').touch()
                 result = find_installations(temporary)
                 self.assertEqual(len(result), 1)
-                self.assertEqual(result[0]['path'], str(install / 'CMAPI.dll'))
+                self.assertEqual(result[0]['path'], str((install / 'CMAPI.dll').resolve()))
 
     def test_pe_architecture(self):
         with tempfile.TemporaryDirectory() as temporary:

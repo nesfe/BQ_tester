@@ -72,7 +72,7 @@ export default function App() {
   }, []);
 
   const handleIncomingTelemetry = (data) => {
-    const timeNow = new Date();
+    const timeNow = new Date(data.timestamp ?? Date.now());
     const timeStr = timeNow.toTimeString().split(' ')[0] + '.' + String(timeNow.getMilliseconds()).padStart(3, '0');
 
     const point = {
@@ -162,7 +162,7 @@ export default function App() {
         setTelemetry(null);
         setHistory([]);
         setStatusMsg("Opening TI adapter & reading battery...");
-        const res = await window.electronAPI.connectDevice(selectedDevice);
+        await window.electronAPI.connectDevice(selectedDevice);
         setIsConnected(true);
         setStatusMsg("Connected via TI CMAPI");
       } catch (err) {
