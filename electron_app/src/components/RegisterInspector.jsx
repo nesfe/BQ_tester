@@ -4,19 +4,13 @@ import { SBS_REGISTERS } from '../utils/smbus_definitions';
 export function RegisterInspector({ telemetry }) {
   const getRegisterValue = (reg) => {
     if (!telemetry) return 'N/A';
-    switch (reg.addr) {
-      case 0x08: return `${(telemetry.temp / 10.0).toFixed(1)} °C`;
-      case 0x09: return `${telemetry.v} mV`;
-      case 0x0A: return `${telemetry.i} mA`;
-      case 0x0D: return `${telemetry.soc} %`;
-      case 0x3C: return `${telemetry.c4} mV`;
-      case 0x3D: return `${telemetry.c3} mV`;
-      case 0x3E: return `${telemetry.c2} mV`;
-      case 0x3F: return `${telemetry.c1} mV`;
-      case 0x51: return `0x${(telemetry.sf || 0).toString(16).toUpperCase()}`;
-      case 0x54: return `0x${(telemetry.op || 0).toString(16).toUpperCase()}`;
-      default: return '0x0000';
-    }
+    const fields = { 0x08: 'temp', 0x09: 'v', 0x0A: 'i', 0x0D: 'soc',
+      0x3C: 'c4', 0x3D: 'c3', 0x3E: 'c2', 0x3F: 'c1', 0x51: 'sf', 0x54: 'op' };
+    const value = telemetry[fields[reg.addr]];
+    if (value == null) return 'N/A';
+    if (reg.isBitfield) return `0x${value.toString(16).toUpperCase().padStart(8, '0')}`;
+    if (reg.addr === 0x08) return `${(value / 10 - 273.15).toFixed(1)} °C`;
+    return `${value} ${reg.unit}`;
   };
 
   return (

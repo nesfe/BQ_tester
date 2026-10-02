@@ -1,5 +1,7 @@
 # BQ_tester — BQ40Z50-R5 Real-Time Telemetry & Status Debugger
 
+> **Windows + EV2400 (Electron 2.1):** используется официальный TI CMAPI через отдельный x86-мост. Требуется установка bqStudio / bqTools SDK с `CMAPI.dll` и `commmgr.exe`. [Инструкция по запуску, сборке и диагностике](docs/EV2400_WINDOWS.md). Описанная ниже архитектура MSP430/WebSerial — отдельный вариант проекта.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-MSP430%20%7C%20WebSerial%20%7C%20Python-orange.svg)]()
 [![Target IC](https://img.shields.io/badge/Target%20IC-TI%20BQ40Z50--R5-red.svg)]()

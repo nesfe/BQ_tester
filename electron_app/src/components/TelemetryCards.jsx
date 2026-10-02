@@ -4,14 +4,14 @@ import { Zap, BatteryCharging, Thermometer, ShieldAlert, Layers, Scale } from 'l
 export function TelemetryCards({ telemetry, activeAlerts }) {
   if (!telemetry) return null;
 
-  const currentA = (telemetry.i / 1000.0).toFixed(2);
-  const voltageV = (telemetry.v / 1000.0).toFixed(2);
-  const tempC = (telemetry.temp / 10.0).toFixed(1);
+  const currentA = telemetry.i == null ? 'N/A' : (telemetry.i / 1000.0).toFixed(2);
+  const voltageV = telemetry.v == null ? 'N/A' : (telemetry.v / 1000.0).toFixed(2);
+  const tempC = telemetry.temp == null ? 'N/A' : (telemetry.temp / 10.0 - 273.15).toFixed(1);
 
   const cellVoltages = [telemetry.c1, telemetry.c2, telemetry.c3, telemetry.c4];
   const maxCell = Math.max(...cellVoltages);
   const minCell = Math.min(...cellVoltages);
-  const cellDelta = (maxCell - minCell);
+  const cellDelta = cellVoltages.every(Number.isFinite) ? maxCell - minCell : 'N/A';
 
   const isCharging = telemetry.i > 100;
   const isDischarging = telemetry.i < -100;
@@ -44,7 +44,7 @@ export function TelemetryCards({ telemetry, activeAlerts }) {
           <BatteryCharging size={18} className="text-cyan" />
         </div>
         <div className="card-value">
-          {telemetry.soc}%
+          {telemetry.soc == null ? 'N/A' : `${telemetry.soc}%`}
         </div>
       </div>
 
@@ -71,10 +71,10 @@ export function TelemetryCards({ telemetry, activeAlerts }) {
       <div className={`stat-card ${activeAlerts.length > 0 ? 'card-alert-active' : ''}`}>
         <div className="card-header">
           <span className="card-title">Safety Status</span>
-          <ShieldAlert size={18} className={activeAlerts.length > 0 ? 'text-red' : 'text-green'} />
+          <ShieldAlert size={18} className={telemetry.sf == null ? '' : telemetry.sf !== 0 ? 'text-red' : 'text-green'} />
         </div>
         <div className="card-value">
-          {activeAlerts.length > 0 ? `0x${(telemetry.sf||0).toString(16).toUpperCase()}` : "NORMAL"}
+          {telemetry.sf == null ? 'UNKNOWN' : telemetry.sf !== 0 ? `0x${telemetry.sf.toString(16).toUpperCase()}` : 'NORMAL'}
         </div>
       </div>
     </div>

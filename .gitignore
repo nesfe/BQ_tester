@@ -29,3 +29,8 @@ ENV/
 *.userosv
 *.sln.docstates
 .DS_Store
+
+# Electron and frozen TI bridge builds
+electron_app/dist_electron/
+electron_app/bridge-dist/
+electron_app/bridge-build/

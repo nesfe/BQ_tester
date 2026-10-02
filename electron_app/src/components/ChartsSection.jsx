@@ -10,13 +10,13 @@ export function ChartsSection({ history, isPaused, setIsPaused, onClearHistory }
 
   const displayData = history.slice(-windowSize).map(item => ({
     time: item.timeStr,
-    currentA: (item.i / 1000.0),
-    voltageV: (item.v / 1000.0),
+    currentA: (item.i == null ? null : item.i / 1000.0),
+    voltageV: (item.v == null ? null : item.v / 1000.0),
     cell1: item.c1,
     cell2: item.c2,
     cell3: item.c3,
     cell4: item.c4,
-    tempC: (item.temp / 10.0),
+    tempC: (item.temp == null ? null : item.temp / 10.0 - 273.15),
     soc: item.soc
   }));
 
