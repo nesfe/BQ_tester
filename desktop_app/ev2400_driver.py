@@ -1,17 +1,13 @@
 """
-TI EV2400 / EV2300 & Universal USB-SMBus Hardware Driver (Multi-Engine)
+TI EV2400 / EV2300 Universal USB-HID & DLL Driver Bridge
 Project: BQ_tester
-Description: Features 3 redundant detection engines:
-  1. Native TI spb.dll / bqEV2400.dll Windows DLL loader (from TI Battery Management Studio)
-  2. Broad Windows USB-HID Enumerator (scans all HID devices without VID restriction)
-  3. Direct USB HID Force-Connector
+Description: Full support for TI EV2400 PID 0x0037 / 0x0036 / 0x0034 with SMBus Header Auto-Probing.
 """
 
 import sys
 import os
 import time
 import ctypes
-from ctypes import wintypes
 
 try:
     import hid
@@ -19,11 +15,9 @@ try:
 except ImportError:
     HAS_HID = False
 
-# Known Vendor & Product IDs
 TI_VID = 0x0451
-KNOWN_TI_PIDS = [0x0036, 0x0034, 0x0035, 0x0037, 0x0038, 0x16A8, 0x3410]
-CP2112_VID = 0x10C4
-CP2112_PID = 0xEA90
+# Include PID 0x0037 explicitly alongside 0x0036 and 0x0034
+EV2400_PIDS = [0x0037, 0x0036, 0x0034, 0x0035, 0x0038, 0x16A8, 0x3410]
 
 BQ40Z50_7BIT_ADDR = 0x0B
 BQ40Z50_8BIT_ADDR = 0x16
@@ -31,140 +25,233 @@ BQ40Z50_8BIT_ADDR = 0x16
 class TIEV2400Adapter:
     def __init__(self):
         self.dev = None
+        self.dll_handle = None
         self.is_connected = False
         self.active_engine = None
-        self.dll_handle = None
+        self.working_header = 0x33 # Default EV2400 header
 
     @staticmethod
     def detect_all_devices():
         """
-        Scans all connected hardware using multiple detection engines.
-        Returns a list of detailed device dictionaries.
+        Scans system for TI EV2400/EV2300 using TI DLLs, HID (PID 0x0037/0x0036), and WinUSB.
         """
         devices = []
         seen_paths = set()
 
-        # ENGINE 1: Check for TI Native spb.dll / bme.dll in common Windows paths
-        spb_path = TIEV2400Adapter._find_ti_dll()
-        if spb_path:
+        # 1. Check TI bqStudio Native DLLs
+        found_dlls = TIEV2400Adapter._find_ti_dlls()
+        for dll_path in found_dlls:
+            dll_name = os.path.basename(dll_path)
             devices.append({
-                "name": f"🔌 TI Native DLL Driver ({os.path.basename(spb_path)})",
+                "name": f"🔌 TI Native DLL Driver ({dll_name})",
                 "type": "TI_DLL",
-                "path": spb_path,
+                "path": dll_path,
                 "engine": "TI_DLL"
             })
 
-        # ENGINE 2: Unrestricted HID Enumeration
+        # 2. Scan HID API devices explicitly checking PID 0x0037, 0x0036, 0x0034
         if HAS_HID:
             try:
-                # Enumerate ALL HID devices on system
                 all_hid = hid.enumerate(0, 0)
                 for d in all_hid:
                     vid = d.get('vendor_id', 0)
                     pid = d.get('product_id', 0)
-                    path = d.get('path', b'').decode('utf-8', errors='ignore') if isinstance(d.get('path'), bytes) else str(d.get('path', ''))
                     mfg = d.get('manufacturer_string', '') or ''
                     prod = d.get('product_string', '') or ''
+                    path = d.get('path', b'').decode('utf-8', errors='ignore') if isinstance(d.get('path'), bytes) else str(d.get('path', ''))
+
                     if path in seen_paths:
                         continue
 
-                    is_match = False
-                    dev_type = "UNKNOWN"
-
-                    # Check Texas Instruments VID (0x0451)
-                    if vid == TI_VID:
-                        is_match = True
-                        dev_type = "EV2400" if pid == 0x0036 else ("EV2300" if pid == 0x0034 else "TI_USB")
-                    # Check Keyword match in Product / Mfg strings
-                    elif any(kw in prod.upper() for kw in ["EV2400", "EV2300", "TEXAS", "BQ", "SMBUS", "BMS"]):
-                        is_match = True
-                        dev_type = "EV2400_COMPAT"
-                    elif vid == CP2112_VID and pid == CP2112_PID:
-                        is_match = True
-                        dev_type = "CP2112"
-
-                    if is_match:
+                    # Check TI VID 0x0451 or PID 0x0037/0x0036
+                    if vid == TI_VID or pid in EV2400_PIDS or "EV2400" in prod.upper() or "EV2300" in prod.upper():
                         seen_paths.add(path)
-                        interface = d.get('interface_number', -1)
+                        iface = d.get('interface_number', 0)
+                        dev_name = f"🔌 TI {prod or 'EV2400'} (VID:0x{vid:04X} PID:0x{pid:04X} IF:{iface})"
                         devices.append({
-                            "name": f"🔌 {dev_type}: {prod or 'EV2400/EV2300'} (VID:0x{vid:04X} PID:0x{pid:04X} IF:{interface})",
-                            "type": dev_type,
+                            "name": dev_name,
+                            "type": "EV2400_HID",
                             "path": path,
                             "vid": vid,
                             "pid": pid,
-                            "interface": interface,
+                            "interface": iface,
                             "engine": "HID"
                         })
             except Exception as e:
                 print(f"[HID Enum Error]: {e}")
 
-        # ENGINE 3: Always add Force-Open TI EV2400 Default Option
+        # 3. Add Direct PID 0x0037 / PID 0x0036 Fallback Entries
         devices.append({
-            "name": "⚡ Force Connect TI EV2400 (Default VID:0x0451 PID:0x0036)",
+            "name": "⚡ Force Direct TI EV2400 (PID 0x0037 / 0x0036 Auto-Connect)",
             "type": "EV2400_FORCE",
             "vid": TI_VID,
-            "pid": 0x0036,
+            "pid": 0x0037,
             "engine": "FORCE"
         })
 
         return devices
 
     @staticmethod
-    def _find_ti_dll():
-        """Searches Windows system for TI bqStudio spb.dll or bme.dll"""
+    def _find_ti_dlls():
         if sys.platform != 'win32':
-            return None
+            return []
 
-        candidates = [
-            r"C:\Program Files (x86)\Texas Instruments\Battery Management Studio\spb.dll",
-            r"C:\Program Files\Texas Instruments\Battery Management Studio\spb.dll",
-            r"C:\Texas Instruments\Battery Management Studio\spb.dll",
-            r"C:\Program Files (x86)\Texas Instruments\Battery Management Studio\bme.dll",
-            r"spb.dll"
+        search_dirs = [
+            r"C:\Program Files (x86)\Texas Instruments\Battery Management Studio",
+            r"C:\Program Files\Texas Instruments\Battery Management Studio",
+            r"C:\Texas Instruments\Battery Management Studio",
+            r"C:\ti\Battery Management Studio",
+            os.getcwd()
         ]
-        for c in candidates:
-            if os.path.exists(c):
-                return c
-        return None
+
+        dll_names = ["spb_Win64.dll", "spb.dll", "bqEV2400.dll", "bme.dll", "spb32.dll"]
+        found = []
+
+        for s_dir in search_dirs:
+            if os.path.exists(s_dir):
+                for name in dll_names:
+                    full_path = os.path.join(s_dir, name)
+                    if os.path.exists(full_path) and full_path not in found:
+                        found.append(full_path)
+
+        return found
 
     def open(self, device_info):
         engine = device_info.get('engine', 'FORCE')
 
         if engine == 'TI_DLL':
-            return self._open_ti_dll(device_info.get('path'))
+            res = self._open_ti_dll(device_info.get('path'))
+        elif engine == 'HID':
+            res = self._open_hid(device_info.get('path'))
         else:
-            return self._open_hid(device_info)
+            res = self._open_force_hid(device_info.get('vid', TI_VID), device_info.get('pid', 0x0037))
+
+        if res:
+            # Auto-probe working SMBus HID packet header
+            self._probe_working_header()
+
+        return res
 
     def _open_ti_dll(self, dll_path):
         try:
             self.dll_handle = ctypes.windll.LoadLibrary(dll_path)
-            self.is_connected = True
             self.active_engine = "TI_DLL"
+            self.is_connected = True
             return True
         except Exception as e:
-            raise RuntimeError(f"Failed to load TI DLL {dll_path}: {e}")
+            raise RuntimeError(f"Failed to load TI DLL ({dll_path}): {e}")
 
-    def _open_hid(self, device_info):
+    def _open_hid(self, path):
         if not HAS_HID:
             raise RuntimeError("hidapi module is missing. Install via `pip install hidapi`.")
-
         try:
             self.dev = hid.device()
-            path = device_info.get('path')
-            if path and path != 'FORCE':
-                self.dev.open_path(path.encode('utf-8') if isinstance(path, str) else path)
-            else:
-                vid = device_info.get('vid', TI_VID)
-                pid = device_info.get('pid', 0x0036)
-                self.dev.open(vid, pid)
-
+            self.dev.open_path(path.encode('utf-8') if isinstance(path, str) else path)
             self.dev.set_nonblocking(False)
-            self.is_connected = True
             self.active_engine = "HID"
+            self.is_connected = True
             return True
         except Exception as e:
-            self.is_connected = False
-            raise RuntimeError(f"Failed to open USB HID device. Make sure TI bqStudio is CLOSED. Error: {e}")
+            raise RuntimeError(f"Could not open EV2400 HID path. Ensure bqStudio is CLOSED! Error: {e}")
+
+    def _open_force_hid(self, vid, pid):
+        if not HAS_HID:
+            raise RuntimeError("hidapi module is missing.")
+        
+        # Try PID 0x0037 first, then PID 0x0036
+        for p in [pid, 0x0037, 0x0036, 0x0034]:
+            try:
+                self.dev = hid.device()
+                self.dev.open(vid, p)
+                self.dev.set_nonblocking(False)
+                self.active_engine = "HID"
+                self.is_connected = True
+                return True
+            except Exception:
+                pass
+
+        raise RuntimeError("Could not connect to TI EV2400 (PID 0x0037/0x0036). Ensure bqStudio is CLOSED!")
+
+    def _probe_working_header(self):
+        """Auto-probes EV2400 SMBus packet headers to lock onto the working protocol format"""
+        if self.active_engine != "HID" or not self.dev:
+            return
+
+        candidate_headers = [0x33, 0x0B, 0x03, 0x16, 0x2C, 0x00]
+        for hdr in candidate_headers:
+            val = self._try_read_with_header(hdr, 0x09) # Try reading Voltage (0x09)
+            if val is not None and val > 2000 and val < 30000: # Valid pack voltage (2V to 30V)
+                self.working_header = hdr
+                print(f"[EV2400 Header Auto-Detect] Locked onto header: 0x{hdr:02X}")
+                return
+
+            val_temp = self._try_read_with_header(hdr, 0x08) # Try reading Temp (0x08)
+            if val_temp is not None and val_temp > 2500 and val_temp < 3500: # Valid Kelvin temp
+                self.working_header = hdr
+                print(f"[EV2400 Header Auto-Detect] Locked onto header: 0x{hdr:02X}")
+                return
+
+    def _try_read_with_header(self, hdr, reg_cmd, slave_addr=BQ40Z50_8BIT_ADDR):
+        if not self.dev:
+            return None
+
+        # Build 64-byte EV2400 HID Report
+        pkt = bytearray(64)
+        pkt[0] = 0x00      # Report ID
+        pkt[1] = hdr       # Command header
+        pkt[2] = slave_addr & 0xFE # 8-bit Write Address (0x16)
+        pkt[3] = reg_cmd & 0xFF    # Register Command
+        pkt[4] = 0x02              # Read length
+
+        try:
+            self.dev.write(pkt)
+            rx = self.dev.read(64, timeout_ms=150)
+            if rx and len(rx) >= 3:
+                # Check response formats
+                if len(rx) >= 4 and rx[0] in [0x00, hdr]:
+                    val = rx[2] | (rx[3] << 8)
+                    return val if val != 0xFFFF else None
+                else:
+                    val = rx[1] | (rx[2] << 8)
+                    return val if val != 0xFFFF else None
+        except Exception:
+            pass
+
+        return None
+
+    def read_smbus_word(self, reg_cmd, slave_addr=BQ40Z50_8BIT_ADDR):
+        if self.active_engine == "TI_DLL" and self.dll_handle:
+            return self._read_dll_word(reg_cmd, slave_addr)
+        elif self.dev:
+            # First try with auto-detected working header
+            val = self._try_read_with_header(self.working_header, reg_cmd, slave_addr)
+            if val is not None:
+                return val
+            
+            # Fallback scan other headers if working header failed
+            for hdr in [0x33, 0x0B, 0x03, 0x16, 0x2C]:
+                val = self._try_read_with_header(hdr, reg_cmd, slave_addr)
+                if val is not None:
+                    self.working_header = hdr
+                    return val
+
+        return None
+
+    def _read_dll_word(self, reg_cmd, slave_addr):
+        try:
+            if hasattr(self.dll_handle, 'spbReadWord'):
+                val = ctypes.c_uint16(0)
+                res = self.dll_handle.spbReadWord(ctypes.c_uint8(slave_addr), ctypes.c_uint8(reg_cmd), ctypes.byref(val))
+                if res == 0:
+                    return val.value
+            if hasattr(self.dll_handle, 'BQEV2400_ReadWord'):
+                val = ctypes.c_uint16(0)
+                res = self.dll_handle.BQEV2400_ReadWord(ctypes.c_uint8(reg_cmd), ctypes.byref(val))
+                if res == 0:
+                    return val.value
+        except Exception as e:
+            print(f"[TI DLL Read Error]: {e}")
+        return None
 
     def close(self):
         if self.dev:
@@ -176,69 +263,23 @@ class TIEV2400Adapter:
         self.dll_handle = None
         self.is_connected = False
 
-    def read_smbus_word(self, reg_cmd, slave_addr=BQ40Z50_8BIT_ADDR):
-        if self.active_engine == "TI_DLL" and self.dll_handle:
-            return self._read_dll_word(reg_cmd, slave_addr)
-        else:
-            return self._read_hid_word(reg_cmd, slave_addr)
-
-    def _read_dll_word(self, reg_cmd, slave_addr):
-        # Calls TI spb.dll function: spbReadWord(slaveAddr, regCmd, pData)
-        try:
-            if hasattr(self.dll_handle, 'spbReadWord'):
-                val = ctypes.c_uint16(0)
-                res = self.dll_handle.spbReadWord(slave_addr, reg_cmd, ctypes.byref(val))
-                if res == 0:
-                    return val.value
-        except Exception:
-            pass
-        return None
-
-    def _read_hid_word(self, reg_cmd, slave_addr):
-        if not self.dev:
-            return None
-
-        # EV2400 HID Report formatting:
-        # Standard EV2400 SMBus Read Word packet:
-        # Byte 0: 0x00 (Report ID)
-        # Byte 1: 0x33 or 0x0B (SMBus Read Word command)
-        # Byte 2: 0x16 (BQ40Z50 8-bit Write Address)
-        # Byte 3: reg_cmd
-        # Byte 4: 0x02
-        attempts = [
-            bytearray([0x00, 0x33, slave_addr & 0xFE, reg_cmd & 0xFF, 0x02] + [0]*59),
-            bytearray([0x00, 0x0B, slave_addr & 0xFE, reg_cmd & 0xFF, 0x02] + [0]*59),
-            bytearray([0x00, 0x03, slave_addr & 0xFE, reg_cmd & 0xFF, 0x02] + [0]*59)
-        ]
-
-        for pkt in attempts:
-            try:
-                self.dev.write(pkt)
-                rx = self.dev.read(64, timeout_ms=200)
-                if rx and len(rx) >= 3:
-                    # Parse Little Endian word from response
-                    if len(rx) >= 4 and (rx[0] == 0x00 or rx[0] == 0x33):
-                        return rx[2] | (rx[3] << 8)
-                    else:
-                        return rx[1] | (rx[2] << 8)
-            except Exception:
-                continue
-
-        return None
-
     def read_telemetry(self):
-        v = self.read_smbus_word(0x09)
-        i_raw = self.read_smbus_word(0x0A)
-        c1 = self.read_smbus_word(0x3F)
-        c2 = self.read_smbus_word(0x3E)
-        c3 = self.read_smbus_word(0x3D)
-        c4 = self.read_smbus_word(0x3C)
-        soc = self.read_smbus_word(0x0D)
-        temp = self.read_smbus_word(0x08)
-        sf = self.read_smbus_word(0x51)
-        op = self.read_smbus_word(0x54)
+        v = self.read_smbus_word(0x09)       # Voltage (mV)
+        i_raw = self.read_smbus_word(0x0A)   # Current (mA)
+        c1 = self.read_smbus_word(0x3F)      # Cell 1 (mV)
+        c2 = self.read_smbus_word(0x3E)      # Cell 2 (mV)
+        c3 = self.read_smbus_word(0x3D)      # Cell 3 (mV)
+        c4 = self.read_smbus_word(0x3C)      # Cell 4 (mV)
+        soc = self.read_smbus_word(0x0D)     # SoC (%)
+        temp = self.read_smbus_word(0x08)    # Temp (0.1 K)
+        sf = self.read_smbus_word(0x51)      # SafetyStatus
+        op = self.read_smbus_word(0x54)      # OperationStatus
 
-        if v is None and c1 is None:
+        # Fallback cell voltages if 0x3F-0x3C empty
+        if c1 is None:
+            c1 = self.read_smbus_word(0x3F, 0x16)
+
+        if v is None and c1 is None and temp is None:
             return None
 
         i_val = 0
