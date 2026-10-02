@@ -6,7 +6,7 @@ export function DataExporter({ history, recordedData, onClearBuffer }) {
     const dataToExport = recordedData.length > 0 ? recordedData : history;
     if (dataToExport.length === 0) return;
 
-    const headers = ["Timestamp", "TimeStr", "Pack_mV", "Pack_mA", "Cell1_mV", "Cell2_mV", "Cell3_mV", "Cell4_mV", "SoC", "Temp"];
+    const headers = ["Timestamp", "TimeStr", "Pack_mV", "Pack_mA", "Cell1_mV", "Cell2_mV", "Cell3_mV", "Cell4_mV", "SoC", "Temp_0.1K"];
     const rows = dataToExport.map(d => [d.timestamp, d.timeStr, d.v, d.i, d.c1, d.c2, d.c3, d.c4, d.soc, d.temp]);
 
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");

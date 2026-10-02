@@ -1,6 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  chooseTIDirectory: () => ipcRenderer.invoke('choose-ti-directory'),
+  onConnectionState: (callback) => {
+    const subscription = (_event, value) => callback(value);
+    ipcRenderer.on('connection-state', subscription);
+    return () => ipcRenderer.removeListener('connection-state', subscription);
+  },
   scanDevices: () => ipcRenderer.invoke('scan-devices'),
   connectDevice: (deviceInfo) => ipcRenderer.invoke('connect-device', deviceInfo),
   disconnectDevice: () => ipcRenderer.invoke('disconnect-device'),

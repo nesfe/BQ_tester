@@ -25,12 +25,12 @@ export function CellBreakdown({ telemetry }) {
       <div className="cell-grid">
         {cells.map(cell => {
           const deltaFromAvg = cell.voltage - avgV;
-          const percent = getPercent(cell.voltage);
+          const percent = cell.voltage == null ? 0 : getPercent(cell.voltage);
 
           return (
             <div key={cell.id} className="cell-card">
               <div className="cell-name" style={{ color: cell.color }}>{cell.name}</div>
-              <div className="cell-voltage-big">{cell.voltage} <span className="unit-sm">mV</span></div>
+              <div className="cell-voltage-big">{cell.voltage ?? 'N/A'} <span className="unit-sm">mV</span></div>
               <div className="cell-bar-container">
                 <div className="cell-bar-fill" style={{ width: `${percent}%`, backgroundColor: cell.color }} />
               </div>

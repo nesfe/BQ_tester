@@ -13,6 +13,7 @@ export default function App() {
   const [devices, setDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [statusMsg, setStatusMsg] = useState('Disconnected');
   const [telemetry, setTelemetry] = useState(null);
   const [history, setHistory] = useState([]);
@@ -22,8 +23,8 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
 
-  const prevSafetyFlagsRef = useRef(0);
-  const prevOpFlagsRef = useRef(0);
+  const prevSafetyFlagsRef = useRef(null);
+  const prevOpFlagsRef = useRef(null);
   const isPausedRef = useRef(isPaused);
   isPausedRef.current = isPaused;
   const isRecordingRef = useRef(isRecording);
@@ -34,11 +35,11 @@ export default function App() {
       try {
         const list = await window.electronAPI.scanDevices();
         setDevices(list);
-        if (list.length > 0) {
-          setSelectedDevice(list[0]);
-        }
+        setSelectedDevice(list[0] || null);
       } catch (e) {
-        console.error("Scan error:", e);
+        setDevices([]);
+        setSelectedDevice(null);
+        setStatusMsg(e.message);
       }
     }
   };
@@ -47,6 +48,15 @@ export default function App() {
     scanDevices();
 
     if (window.electronAPI) {
+      const unsubState = window.electronAPI.onConnectionState((state) => {
+        setIsConnected(state.connected);
+        setStatusMsg(state.message);
+        if (!state.connected) {
+          setTelemetry(null);
+          prevSafetyFlagsRef.current = null;
+          prevOpFlagsRef.current = null;
+        }
+      });
       const unsubTelemetry = window.electronAPI.onTelemetryUpdate((data) => {
         handleIncomingTelemetry(data);
       });
@@ -54,6 +64,7 @@ export default function App() {
         setDebugLogs(prev => [...prev.slice(-100), log]);
       });
       return () => {
+        unsubState();
         unsubTelemetry();
         unsubDebug();
       };
@@ -87,10 +98,10 @@ export default function App() {
   };
 
   const detectStatusTransitions = (point, timeStr) => {
-    const sf = point.sf || 0;
+    const sf = point.sf;
     const prevSf = prevSafetyFlagsRef.current;
 
-    if (sf !== prevSf) {
+    if (sf != null && sf !== prevSf) {
       SAFETY_STATUS_FLAGS.forEach(flag => {
         const nowActive = (sf & (1 << flag.bit)) !== 0;
         const prevActive = (prevSf & (1 << flag.bit)) !== 0;
@@ -100,7 +111,7 @@ export default function App() {
             type: 'safety', state: 'ASSERTED', code: flag.code, label: flag.label,
             desc: flag.desc, severity: flag.severity, rawHex: `0x${sf.toString(16)}`, timeStr
           }]);
-        } else if (!nowActive && prevActive) {
+        } else if (!nowActive && prevActive && prevSf != null) {
           setEventLogs(prev => [...prev, {
             type: 'safety', state: 'CLEARED', code: flag.code, label: flag.label,
             desc: `${flag.label} returned to normal`, severity: 'success', rawHex: `0x${sf.toString(16)}`, timeStr
@@ -110,14 +121,14 @@ export default function App() {
       prevSafetyFlagsRef.current = sf;
     }
 
-    const op = point.op || 0;
+    const op = point.op;
     const prevOp = prevOpFlagsRef.current;
-    if (op !== prevOp) {
+    if (op != null && op !== prevOp) {
       OPERATION_STATUS_FLAGS.forEach(flag => {
         const nowActive = (op & (1 << flag.bit)) !== 0;
         const prevActive = (prevOp & (1 << flag.bit)) !== 0;
 
-        if (nowActive !== prevActive) {
+        if (nowActive !== prevActive && (prevOp != null || nowActive)) {
           setEventLogs(prev => [...prev, {
             type: 'operation', state: nowActive ? 'ASSERTED' : 'CLEARED',
             code: flag.code, label: flag.label, desc: flag.desc, severity: flag.severity,
@@ -130,6 +141,7 @@ export default function App() {
   };
 
   const toggleConnect = async () => {
+    if (isConnecting) return;
     if (!window.electronAPI) {
       alert("Electron API not found!");
       return;
@@ -146,16 +158,32 @@ export default function App() {
       }
 
       try {
-        setStatusMsg("Connecting & Scanning SMBus...");
+        setIsConnecting(true);
+        setTelemetry(null);
+        setHistory([]);
+        setStatusMsg("Opening TI adapter & reading battery...");
         const res = await window.electronAPI.connectDevice(selectedDevice);
         setIsConnected(true);
-        setStatusMsg("Connected (10Hz SMBus)");
+        setStatusMsg("Connected via TI CMAPI");
       } catch (err) {
         setIsConnected(false);
-        setStatusMsg("Error");
+        setStatusMsg(err.message);
         alert(err.message);
+      } finally {
+        setIsConnecting(false);
       }
     }
+  };
+
+  const chooseTIDirectory = async () => {
+    try {
+      const list = await window.electronAPI.chooseTIDirectory();
+      if (list) {
+        setDevices(list);
+        setSelectedDevice(list[0] || null);
+        setStatusMsg('TI libraries found; ready to connect');
+      }
+    } catch (error) { setStatusMsg(error.message); }
   };
 
   const activeAlerts = telemetry ? SAFETY_STATUS_FLAGS.filter(f => (telemetry.sf & (1 << f.bit)) !== 0) : [];
@@ -168,13 +196,14 @@ export default function App() {
             <Activity size={24} color="#6366f1" />
           </div>
           <div>
-            <h1 className="brand-title">BQ_tester <span className="badge-v">v2.0.4 Electron</span></h1>
+            <h1 className="brand-title">BQ_tester <span className="badge-v">v2.1.0 Electron</span></h1>
             <p className="brand-subtitle">High-Speed Real-Time SMBus BQ40Z50 Debugger</p>
           </div>
         </div>
 
         <div className="controls-group">
           <select
+            disabled={isConnected || isConnecting}
             className="select-xs"
             value={selectedDevice ? JSON.stringify(selectedDevice) : ''}
             onChange={(e) => setSelectedDevice(JSON.parse(e.target.value))}
@@ -184,15 +213,20 @@ export default function App() {
             ))}
           </select>
 
-          <button className="btn-sm" onClick={scanDevices}>
-            <RefreshCw size={14} /> Scan USB
+          <button className="btn-sm" onClick={scanDevices} disabled={isConnected || isConnecting}>
+            <RefreshCw size={14} /> Find TI libraries
+          </button>
+
+          <button className="btn-sm" onClick={chooseTIDirectory} disabled={isConnected || isConnecting}>
+            TI libraries…
           </button>
 
           <button
+            disabled={isConnecting || (!isConnected && !selectedDevice)}
             className={`btn ${isConnected ? 'btn-danger' : 'btn-primary'}`}
             onClick={toggleConnect}
           >
-            {isConnected ? 'Disconnect EV2400' : 'Connect Device'}
+            {isConnecting ? 'Connecting…' : isConnected ? 'Disconnect EV2400' : 'Connect Device'}
           </button>
 
           <button
@@ -205,28 +239,9 @@ export default function App() {
       </header>
 
       <main className="main-content">
-        {isConnected && telemetry && !telemetry.hasValidData && (
-          <div style={{
-            background: 'rgba(239, 68, 68, 0.15)',
-            border: '1px solid rgba(239, 68, 68, 0.4)',
-            borderRadius: '8px',
-            padding: '12px 16px',
-            marginBottom: '16px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            color: '#fca5a5'
-          }}>
-            <ShieldAlert size={20} className="text-red" />
-            <div>
-              <strong>EV2400 USB Connected, but BQ40Z50 is not responding on SCL/SDA SMBus lines!</strong>
-              <div style={{ fontSize: '0.82rem', marginTop: '2px', color: '#94a3b8' }}>
-                1. Verify SCL (SmbClock), SDA (SmbData), and GND wires are properly attached to battery header.<br/>
-                2. If battery is sleeping (0V on PACK+), apply momentary charge voltage to wake up BQ40Z50.<br/>
-                3. Ensure Texas Instruments bqStudio.exe is completely closed.
-              </div>
-            </div>
-          </div>
+        <p role="status">{statusMsg}</p>
+        {telemetry && Object.keys(telemetry.errors || {}).length > 0 && (
+          <p role="alert" className="text-red">Some registers could not be read. Missing values are shown as N/A; see the debug log.</p>
         )}
 
         <TelemetryCards telemetry={telemetry} activeAlerts={activeAlerts} />

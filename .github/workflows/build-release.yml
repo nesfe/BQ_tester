@@ -9,12 +9,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-electron-windows:
     runs-on: windows-2022
-
+    permissions:
+      contents: write
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -23,44 +24,73 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: electron_app/package-lock.json
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+      - name: Set up x86 Python for TI's 32-bit CMAPI
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x86'
 
-      - name: Configure node-gyp & Install Dependencies
+      - name: Install dependencies
+        working-directory: electron_app
         run: |
-          cd electron_app
-          npm config set msvs_version 2022
-          npm install
+          npm ci
+          python -m pip install pyinstaller==6.11.1
 
-      - name: Build Web Bundle
+      - name: Test bridge and connection lifecycle
+        working-directory: electron_app
         run: |
-          cd electron_app
-          npm run build
+          npm test
+          python -m unittest discover -s bridge -p "test_*.py" -v
+
+      - name: Package isolated TI bridge
+        working-directory: electron_app
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onedir --console
+          --name ti-bridge --distpath bridge-dist --workpath bridge-build
+          --specpath bridge-build bridge/ti_bridge.py
+
+      - name: Smoke test packaged bridge without hardware
+        working-directory: electron_app
+        shell: pwsh
+        run: |
+          $reply = '{"id":1,"op":"close"}' | & .\bridge-dist\ti-bridge\ti-bridge.exe
+          if ($LASTEXITCODE -ne 0 -or ($reply | ConvertFrom-Json).result.success -ne $true) {
+            throw "Packaged TI bridge smoke test failed: $reply"
+          }
 
       - name: Build Electron Windows Package (.exe)
+        working-directory: electron_app
         run: |
-          cd electron_app
+          npm run build
           npx electron-builder --windows --publish never
+
+      - name: Verify TI bridge is bundled
+        shell: pwsh
+        run: |
+          if (!(Test-Path electron_app/dist_electron/win-unpacked/resources/ti-bridge/ti-bridge.exe)) {
+            throw "TI bridge missing from packaged app"
+          }
 
       - name: Upload Electron EXE Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BQ_tester_Electron_Windows
           path: electron_app/dist_electron/*.exe
+          if-no-files-found: error
 
       - name: Release Electron EXE to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: electron_app/dist_electron/*.exe
-          name: Release ${{ github.ref_name }} (Electron High-Performance)
+          name: Release ${{ github.ref_name }}
           body: |
-            ## BQ_tester v2.0.3 Electron High-Performance Windows Release
-            - **Native Electron App** (Zero Python UI lag, Chromium GPU 60FPS graph rendering).
-            - **`node-hid` Direct C++ USB Engine**: Asynchronous non-blocking EV2400 SMBus polling (PID 0x0037/0x0036).
-            - Supports direct out-of-the-box TI EV2400 / EV2300 USB HID adapters.
+            EV2400 telemetry via TI CMAPI in an isolated x86 bridge.
+            Requires installed TI CMAPI.dll, commmgr.exe and their dependencies (bqStudio / bqTools SDK).
+            Use "TI libraries…" if automatic discovery does not find the installation. Close bqStudio before connecting.
+            Python is bundled; no separate Python installation is needed.
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
