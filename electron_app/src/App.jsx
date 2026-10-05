@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Activity, RefreshCw, Play, Download, ShieldAlert, Cpu, Terminal } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Activity, RefreshCw } from 'lucide-react';
 import { TelemetryCards } from './components/TelemetryCards';
 import { ChartsSection } from './components/ChartsSection';
 import { CellBreakdown } from './components/CellBreakdown';
@@ -8,6 +8,12 @@ import { RegisterInspector } from './components/RegisterInspector';
 import { DataExporter } from './components/DataExporter';
 import { DebugConsole } from './components/DebugConsole';
 import { SAFETY_STATUS_FLAGS, OPERATION_STATUS_FLAGS } from './utils/smbus_definitions';
+import { HISTORY_LIMIT, EVENT_LIMIT, appendBounded, detectTransitions, RecordingBuffer, formatTime } from './utils/telemetry.mjs';
+
+const STATUS_GROUPS = [
+  { field: 'sf', type: 'safety', flags: SAFETY_STATUS_FLAGS },
+  { field: 'op', type: 'operation', flags: OPERATION_STATUS_FLAGS },
+];
 
 export default function App() {
   const [devices, setDevices] = useState([]);
@@ -19,12 +25,28 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [eventLogs, setEventLogs] = useState([]);
   const [debugLogs, setDebugLogs] = useState([]);
-  const [recordedData, setRecordedData] = useState([]);
+  const [recordedCount, setRecordedCount] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
 
-  const prevSafetyFlagsRef = useRef(null);
-  const prevOpFlagsRef = useRef(null);
+  const previousStatus = useRef({ sf: null, op: null });
+  const sequence = useRef(0);
+  const recording = useRef(new RecordingBuffer());
+  const pending = useRef({ latest: null, points: [], events: [] });
+  const scheduledFrame = useRef(null);
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  const getExportData = useCallback(() => recording.current.length ? recording.current.getData() : historyRef.current, []);
+  const clearHistory = useCallback(() => {
+    pending.current.points = [];
+    setHistory([]);
+  }, []);
+  const clearDebug = useCallback(() => setDebugLogs([]), []);
+  const clearPending = () => {
+    if (scheduledFrame.current !== null) cancelAnimationFrame(scheduledFrame.current);
+    scheduledFrame.current = null;
+    pending.current = { latest: null, points: [], events: [] };
+  };
   const isPausedRef = useRef(isPaused);
   isPausedRef.current = isPaused;
   const isRecordingRef = useRef(isRecording);
@@ -52,9 +74,11 @@ export default function App() {
         setIsConnected(state.connected);
         setStatusMsg(state.message);
         if (!state.connected) {
+          // Flush acquired samples before resetting; CSV and events must not lose the last poll.
+          flushTelemetry();
+          clearPending();
           setTelemetry(null);
-          prevSafetyFlagsRef.current = null;
-          prevOpFlagsRef.current = null;
+          previousStatus.current = { sf: null, op: null };
         }
       });
       const unsubTelemetry = window.electronAPI.onTelemetryUpdate((data) => {
@@ -64,6 +88,7 @@ export default function App() {
         setDebugLogs(prev => [...prev.slice(-100), log]);
       });
       return () => {
+        clearPending();
         unsubState();
         unsubTelemetry();
         unsubDebug();
@@ -71,73 +96,33 @@ export default function App() {
     }
   }, []);
 
-  const handleIncomingTelemetry = (data) => {
-    const timeNow = new Date(data.timestamp ?? Date.now());
-    const timeStr = timeNow.toTimeString().split(' ')[0] + '.' + String(timeNow.getMilliseconds()).padStart(3, '0');
-
-    const point = {
-      ...data,
-      timeStr,
-      timestamp: timeNow.getTime()
-    };
-
-    setTelemetry(point);
-
-    if (!isPausedRef.current && point.hasValidData) {
-      setHistory(prev => {
-        const next = [...prev, point];
-        return next.length > 2000 ? next.slice(next.length - 2000) : next;
-      });
-    }
-
-    if (isRecordingRef.current && point.hasValidData) {
-      setRecordedData(prev => [...prev, point]);
-    }
-
-    detectStatusTransitions(point, timeStr);
+  const flushTelemetry = () => {
+    if (scheduledFrame.current !== null) cancelAnimationFrame(scheduledFrame.current);
+    scheduledFrame.current = null;
+    const batch = pending.current;
+    pending.current = { latest: null, points: [], events: [] };
+    if (!batch.latest) return;
+    setTelemetry(batch.latest);
+    if (batch.points.length) setHistory(prev => appendBounded(prev, batch.points, HISTORY_LIMIT));
+    if (batch.events.length) setEventLogs(prev => appendBounded(prev, batch.events, EVENT_LIMIT));
+    setRecordedCount(recording.current.length);
   };
 
-  const detectStatusTransitions = (point, timeStr) => {
-    const sf = point.sf;
-    const prevSf = prevSafetyFlagsRef.current;
-
-    if (sf != null && sf !== prevSf) {
-      SAFETY_STATUS_FLAGS.forEach(flag => {
-        const nowActive = (sf & (1 << flag.bit)) !== 0;
-        const prevActive = (prevSf & (1 << flag.bit)) !== 0;
-
-        if (nowActive && !prevActive) {
-          setEventLogs(prev => [...prev, {
-            type: 'safety', state: 'ASSERTED', code: flag.code, label: flag.label,
-            desc: flag.desc, severity: flag.severity, rawHex: `0x${sf.toString(16)}`, timeStr
-          }]);
-        } else if (!nowActive && prevActive && prevSf != null) {
-          setEventLogs(prev => [...prev, {
-            type: 'safety', state: 'CLEARED', code: flag.code, label: flag.label,
-            desc: `${flag.label} returned to normal`, severity: 'success', rawHex: `0x${sf.toString(16)}`, timeStr
-          }]);
-        }
-      });
-      prevSafetyFlagsRef.current = sf;
+  const handleIncomingTelemetry = (data) => {
+    const timestamp = data.timestamp ?? Date.now();
+    const point = { ...data, timestamp, timeStr: formatTime(timestamp), sequence: ++sequence.current };
+    point.events = detectTransitions(point, previousStatus.current, STATUS_GROUPS);
+    const batch = pending.current;
+    batch.latest = point;
+    // Ingest every sample, even when drawing is coalesced into a single browser frame.
+    if (!isPausedRef.current) {
+      batch.points.push(point);
+      if (batch.points.length > HISTORY_LIMIT) batch.points.shift();
     }
-
-    const op = point.op;
-    const prevOp = prevOpFlagsRef.current;
-    if (op != null && op !== prevOp) {
-      OPERATION_STATUS_FLAGS.forEach(flag => {
-        const nowActive = (op & (1 << flag.bit)) !== 0;
-        const prevActive = (prevOp & (1 << flag.bit)) !== 0;
-
-        if (nowActive !== prevActive && (prevOp != null || nowActive)) {
-          setEventLogs(prev => [...prev, {
-            type: 'operation', state: nowActive ? 'ASSERTED' : 'CLEARED',
-            code: flag.code, label: flag.label, desc: flag.desc, severity: flag.severity,
-            rawHex: `0x${op.toString(16)}`, timeStr
-          }]);
-        }
-      });
-      prevOpFlagsRef.current = op;
-    }
+    batch.events.push(...point.events);
+    if (batch.events.length > EVENT_LIMIT) batch.events.splice(0, batch.events.length - EVENT_LIMIT);
+    if (isRecordingRef.current && point.hasValidData) recording.current.append(point);
+    if (scheduledFrame.current === null) scheduledFrame.current = requestAnimationFrame(flushTelemetry);
   };
 
   const toggleConnect = async () => {
@@ -159,8 +144,11 @@ export default function App() {
 
       try {
         setIsConnecting(true);
+        clearPending();
+        previousStatus.current = { sf: null, op: null };
         setTelemetry(null);
         setHistory([]);
+        setEventLogs([]);
         setStatusMsg("Opening TI adapter & reading battery...");
         await window.electronAPI.connectDevice(selectedDevice);
         setIsConnected(true);
@@ -196,7 +184,7 @@ export default function App() {
             <Activity size={24} color="#6366f1" />
           </div>
           <div>
-            <h1 className="brand-title">BQ_tester <span className="badge-v">v2.1.0 Electron</span></h1>
+            <h1 className="brand-title">BQ_tester <span className="badge-v">v2.2.0 Electron</span></h1>
             <p className="brand-subtitle">High-Speed Real-Time SMBus BQ40Z50 Debugger</p>
           </div>
         </div>
@@ -233,7 +221,7 @@ export default function App() {
             className={`btn ${isRecording ? 'btn-recording' : 'btn-secondary'}`}
             onClick={() => setIsRecording(!isRecording)}
           >
-            {isRecording ? `🔴 REC (${recordedData.length})` : 'Start CSV Log'}
+            {isRecording ? `🔴 REC (${recordedCount})` : 'Start CSV Log'}
           </button>
         </div>
       </header>
@@ -250,7 +238,8 @@ export default function App() {
           history={history}
           isPaused={isPaused}
           setIsPaused={setIsPaused}
-          onClearHistory={() => setHistory([])}
+          onClearHistory={clearHistory}
+          isConnected={isConnected}
         />
 
         <div className="content-grid-two">
@@ -261,13 +250,12 @@ export default function App() {
         <div className="content-grid-two">
           <RegisterInspector telemetry={telemetry} />
           <DataExporter
-            history={history}
-            recordedData={recordedData}
-            onClearBuffer={() => setRecordedData([])}
+            getData={getExportData}
+            count={recordedCount || history.length}
           />
         </div>
 
-        <DebugConsole logs={debugLogs} onClear={() => setDebugLogs([])} />
+        <DebugConsole logs={debugLogs} onClear={clearDebug} />
       </main>
     </div>
   );

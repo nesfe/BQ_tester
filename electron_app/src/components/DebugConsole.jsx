@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Terminal } from 'lucide-react';
 
-export function DebugConsole({ logs, onClear }) {
+export const DebugConsole = memo(function DebugConsole({ logs, onClear }) {
   return (
     <div className="panel-box">
       <div className="panel-header">
@@ -25,4 +25,4 @@ export function DebugConsole({ logs, onClear }) {
       </div>
     </div>
   );
-}
+});

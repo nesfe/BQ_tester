@@ -1,7 +1,6 @@
-import React from 'react';
-import { Clock } from 'lucide-react';
+import React, { memo } from 'react';
 
-export function StatusTimeline({ eventLogs }) {
+export const StatusTimeline = memo(function StatusTimeline({ eventLogs }) {
   return (
     <div className="panel-box">
       <div className="panel-header">
@@ -13,10 +12,10 @@ export function StatusTimeline({ eventLogs }) {
         {eventLogs.length === 0 ? (
           <div className="timeline-empty">Monitoring SMBus events...</div>
         ) : (
-          eventLogs.slice(-50).reverse().map((event, idx) => (
-            <div key={idx} className={`timeline-item ${event.state === 'ASSERTED' ? 'timeline-alert' : 'timeline-normal'}`}>
-              <span className="timeline-time">{event.timeStr}</span>
-              <span className="event-code font-bold">{event.code}</span>
+          eventLogs.slice(-50).reverse().map(event => (
+            <div key={event.id} className={`timeline-item ${event.state !== 'CLEARED' ? 'timeline-alert' : 'timeline-normal'}`}>
+              <span className="timeline-time">{event.timeStr} </span>
+              <span className="event-code font-bold">{event.code} {event.state === 'INITIAL' ? '•' : event.state === 'ASSERTED' ? '↑' : '↓'} </span>
               <span className="event-label">{event.label}</span>
             </div>
           ))
@@ -24,4 +23,4 @@ export function StatusTimeline({ eventLogs }) {
       </div>
     </div>
   );
-}
+});
