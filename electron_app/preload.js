@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  getBatteryCatalog: () => ipcRenderer.invoke('battery-catalog'),
+  identifyBattery: () => ipcRenderer.invoke('battery-identify'),
+  batteryCommand: (request) => ipcRenderer.invoke('battery-command', request),
   chooseTIDirectory: () => ipcRenderer.invoke('choose-ti-directory'),
   onConnectionState: (callback) => {
     const subscription = (_event, value) => callback(value);

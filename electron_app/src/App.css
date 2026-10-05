@@ -111,3 +111,21 @@ body {
 
 .streaming-plot-clip { position: absolute; left: 65px; right: 0; top: 0; height: 200px; overflow: hidden; pointer-events: none; }
 .streaming-plot-layer { position: absolute; left: -65px; top: 0; will-change: transform; }
+
+/* Optional command explorer uses the existing panel palette and controls. */
+.command-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
+.command-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); gap: 20px; }
+.command-table-scroll { max-height: 520px; overflow: auto; }
+.command-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.command-table th, .command-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border-color); overflow-wrap: anywhere; }
+.command-selected { background: var(--bg-card-hover); }
+.command-detail { min-width: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.command-detail p { margin: 8px 0; }
+.command-detail a { color: var(--accent-primary); }
+.command-detail input { width: 100%; padding: 7px; border-radius: 6px; border: 1px solid var(--border-color); background: #171c28; color: white; }
+.command-write { display: grid; gap: 10px; margin-top: 16px; }
+.command-result { margin-top: 16px; max-height: 340px; overflow: auto; }
+.command-result code { white-space: pre-wrap; }
+.command-bit-active { color: var(--accent-warning); }
+.command-explorer button:disabled { opacity: .45; cursor: default; }
+@media (max-width: 1050px) { .command-layout { grid-template-columns: 1fr; } }

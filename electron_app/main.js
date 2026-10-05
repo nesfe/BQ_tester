@@ -6,6 +6,8 @@ const { Session } = require('./bridge/session');
 
 let mainWindow = null;
 let lastReadErrors = '';
+let detectedCatalog = null;
+let detectedGeneration = -1;
 const createBridge = () => new BridgeClient({
   packaged: app.isPackaged, resourcesPath: process.resourcesPath, log: logToUI,
 });
@@ -22,7 +24,7 @@ function logToUI(msg, level = 'info') {
 }
 
 session.on('state', state => {
-  if (!state.connected) lastReadErrors = '';
+  if (!state.connected) { lastReadErrors = ''; detectedCatalog = null; detectedGeneration = -1; }
   send('connection-state', state);
   logToUI(state.message, state.connected ? 'success' : 'warning');
 });
@@ -95,9 +97,58 @@ ipcMain.handle('choose-ti-directory', async () => {
 ipcMain.handle('connect-device', async (_event, device) => {
   if (!device || device.type !== 'TI_CMAPI') throw new Error('Select a TI CMAPI installation first');
   logToUI(`Opening TI CMAPI: ${device.path}; SMBus address 0x16`, 'info');
-  return session.connect(device);
+  const result = await session.connect(device);
+  try { result.catalog = await identifyBattery(); }
+  catch (error) { logToUI(`Firmware detection: ${error.message}`, 'warning'); }
+  return result;
 });
 ipcMain.handle('disconnect-device', async () => {
   await session.disconnect();
   return { success: true };
+});
+
+// The renderer supplies a catalogue ID, never an unrestricted SMBus operation.
+ipcMain.handle('battery-catalog', async () => {
+  const result = await session.command('catalog');
+  return { ...result, maintenance: result.maintenance || session.maintenance };
+});
+async function identifyBattery() {
+  const result = await session.command('identify');
+  detectedCatalog = result; detectedGeneration = session.generation;
+  return result;
+}
+ipcMain.handle('battery-identify', identifyBattery);
+let commandDialogOpen = false;
+ipcMain.handle('battery-command', async (_event, input) => {
+  if (!input || !['read', 'write', 'execute'].includes(input.action)) throw new Error('Invalid action');
+  const generation = session.generation;
+  const catalog = detectedCatalog && detectedGeneration === generation ? detectedCatalog : await session.command('catalog');
+  const entry = catalog.commands.find(item => item.id === input.commandId);
+  if (!entry) throw new Error('Command is not supported by the detected firmware');
+  const mutation = input.action !== 'read';
+  if (mutation) {
+    if (commandDialogOpen) throw new Error('Another command confirmation is open');
+    commandDialogOpen = true;
+    try {
+      const answer = await dialog.showMessageBox(mainWindow, {
+        type: 'warning', buttons: ['Cancel', 'Execute once'], defaultId: 0, cancelId: 0,
+        title: `${entry.name} — ${catalog.identity.name}`,
+        message: `Execute ${entry.id} ${entry.name}?`,
+        detail: `${entry.effect || ''}\nTarget: ${entry.id === 'df:RAW' ? `0x${Number(input.address).toString(16).toUpperCase()} (${input.length} bytes)` : entry.id}\n${entry.kind === 'df' ? 'This overwrites persistent battery configuration.' : 'This can change battery operation, protection, power output or access state.'}\n${entry.kind === 'key' || entry.sensitive ? 'Secret payload is excluded from the log.' : `Payload: ${input.hex || (input.value != null ? String(input.value) : '(none)')}`}\nNo automatic retry. Check the TI command documentation and disconnect the load if required.`,
+      });
+      if (answer.response !== 1) return { cancelled: true };
+    } finally { commandDialogOpen = false; }
+  }
+  if (session.generation !== generation) throw new Error('Connection changed; command cancelled');
+  const args = { commandId: input.commandId, action: input.action, value: input.value,
+    hex: input.hex, address: input.address, length: input.length, confirmed: mutation };
+  logToUI(`${input.action}: ${entry.id} ${entry.name}`, 'info');
+  try {
+    const result = await session.command('execute', args);
+    logToUI(`${entry.id}: ${result.message}`, 'success');
+    return result;
+  } catch (error) {
+    logToUI(`${entry.id}: ${error.message}`, 'danger');
+    throw error;
+  }
 });

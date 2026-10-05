@@ -10,6 +10,7 @@ from pathlib import Path
 import struct
 import sys
 import time
+from commands import CommandMixin
 
 ADDRESS = 0x16  # TI SMBus API uses the 8-bit write address (7-bit address 0x0B).
 BUFFER_SIZE = 256
@@ -69,7 +70,7 @@ def find_installations(directory=None):
     return found
 
 
-class Adapter:
+class Adapter(CommandMixin):
     def __init__(self, dll):
         self.dll = dll
         self.command = C.create_string_buffer(BUFFER_SIZE)
@@ -133,6 +134,8 @@ class Adapter:
         return int.from_bytes(bytes(data[:4]), "little")
 
     def sample(self):
+        if self.maintenance:
+            raise RuntimeError("Normal telemetry is suspended during " + self.maintenance)
         if not self.opened:
             raise RuntimeError("EV2400 is not connected")
         result = {key: None for key in (*WORDS, "sf", "op")}
@@ -205,6 +208,10 @@ def serve(input_stream=sys.stdin, output_stream=sys.stdout):
                     if not adapter:
                         raise RuntimeError("EV2400 is not connected")
                     result = adapter.sample()
+                elif operation in ("identify", "catalog", "execute"):
+                    if not adapter:
+                        raise RuntimeError("EV2400 is not connected")
+                    result = adapter.execute(request) if operation == "execute" else getattr(adapter, operation)()
                 elif operation == "close":
                     if adapter:
                         adapter.close()
