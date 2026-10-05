@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
-import { WINDOW_MS, visiblePoints, valueDomain, nearestPoint, formatTime, markerColor, eventText } from '../utils/telemetry.mjs';
+import { WINDOW_MS, visiblePoints, valueDomain, nearestPoint, formatTime, formatCurrentTick, markerColor, eventText } from '../utils/telemetry.mjs';
 
 const CURRENT = [{ field: 'i', label: 'Pack Current', color: '#6366f1' }];
 const CELLS = [
@@ -127,7 +127,7 @@ export const StreamingChart = memo(function StreamingChart({ history, current = 
         const py = y(value);
         context.strokeStyle = '#262626';
         context.fillStyle = '#737373';
-        context.fillText(`${current ? Number(value.toFixed(2)) : Math.round(value)}${current ? ' A' : ' mV'}`, LEFT - 7, py + 4);
+        context.fillText(`${current ? formatCurrentTick(value, max - min) : Math.round(value)}${current ? ' A' : ' mV'}`, LEFT - 7, py + 4);
       }
       context.textAlign = 'center';
       if (latest) for (let timestamp = Math.ceil((end - WINDOW_MS) / 2000) * 2000; timestamp <= end; timestamp += 2000) {

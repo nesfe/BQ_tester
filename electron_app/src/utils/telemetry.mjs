@@ -62,9 +62,17 @@ export function valueDomain(points, fields, current = false) {
     if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
   }
   if (min === Infinity) return current ? [-1, 1] : [3000, 4200];
-  if (current) { min /= 1000; max /= 1000; min = Math.min(0, min); max = Math.max(0, max); }
-  const padding = current ? Math.max(0.05, (max - min) * 0.1) : 20;
+  if (current) { min /= 1000; max /= 1000; }
+  // Fit the measured range, including milliamp changes far from zero.
+  // The 0.1 mA floor only prevents a degenerate scale for a constant signal.
+  const padding = current ? Math.max(0.0001, (max - min) * 0.1) : 20;
   return [min - padding, max + padding];
+}
+
+export function formatCurrentTick(value, span) {
+  const step = Math.max(Math.abs(span) / 4, 0.000001);
+  const digits = Math.min(6, Math.max(0, Math.ceil(-Math.log10(step)) + 1));
+  return String(Number(value.toFixed(digits)));
 }
 
 export function nearestPoint(points, timestamp) {
