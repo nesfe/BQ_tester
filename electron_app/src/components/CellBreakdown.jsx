@@ -32,7 +32,7 @@ export function CellBreakdown({ telemetry }) {
               <div className="cell-name" style={{ color: cell.color }}>{cell.name}</div>
               <div className="cell-voltage-big">{cell.voltage ?? 'N/A'} <span className="unit-sm">mV</span></div>
               <div className="cell-bar-container">
-                <div className="cell-bar-fill" style={{ width: `${percent}%`, backgroundColor: cell.color }} />
+                <div className="cell-bar-fill" style={{ transform: `scaleX(${percent / 100})`, backgroundColor: cell.color }} />
               </div>
             </div>
           );

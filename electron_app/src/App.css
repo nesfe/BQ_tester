@@ -98,4 +98,16 @@ body {
 .cell-card { background: #0f1218; border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; }
 .cell-voltage-big { font-size: 1.4rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
 .cell-bar-container { height: 6px; background: #1f293d; border-radius: 3px; overflow: hidden; margin-bottom: 6px; }
-.cell-bar-fill { height: 100%; transition: width 0.2s; }
+.cell-bar-fill { height: 100%; width: 100%; transform-origin: left; transition: transform 0.2s; }
+
+/* Live plot internals; existing panels, dimensions and palette are unchanged. */
+.streaming-chart { position: relative; height: 200px; }
+.chart-tooltip {
+  position: absolute; top: 10px; z-index: 2; max-width: 290px;
+  padding: 10px; border: 1px solid #404040; background: #171717;
+  color: #f3f4f6; font-size: 12px; line-height: 1.5; pointer-events: none;
+}
+.chart-tooltip small { color: #9ca3af; }
+
+.streaming-plot-clip { position: absolute; left: 65px; right: 0; top: 0; height: 200px; overflow: hidden; pointer-events: none; }
+.streaming-plot-layer { position: absolute; left: -65px; top: 0; will-change: transform; }

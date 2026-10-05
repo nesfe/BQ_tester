@@ -1,6 +1,6 @@
 {
   "name": "bq-tester-electron",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "High-Performance Real-Time BQ40Z50 Battery Telemetry & Debugger",
   "author": "nesfe",
   "repository": {
@@ -14,13 +14,12 @@
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:pack": "npm run build && electron-builder --dir",
     "electron:dist": "npm run build && electron-builder --publish never",
-    "test": "node --test test/client.test.js test/session.test.js"
+    "test": "node --test test/client.test.js test/session.test.js test/telemetry.test.js"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "recharts": "^2.12.0"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
