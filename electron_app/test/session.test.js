@@ -77,3 +77,51 @@ test('bridge startup failure leaves connection retryable', async () => {
   assert.equal(session.connecting, false);
   assert.equal(session.bridge, null);
 });
+
+test('management commands serialize with polling and block late work after reconnect', async () => {
+  let running=0, max=0;
+  const calls=[];
+  const bridge={async request(op) {
+    calls.push(op); max=Math.max(max,++running); await delay(4);running--;
+    return op==='sample' ? {hasValidData:true} : {};
+  },async close(){}};
+  const s=new Session(() => bridge,1);
+  await s.connect({});
+  await Promise.all([s.command('execute',{action:'read'}),s.command('execute',{action:'read'})]);
+  assert.equal(max,1);
+  assert.equal(calls.filter(x=>x==='execute').length,2);
+  await s.disconnect();
+  await assert.rejects(s.command('execute'),/not connected/);
+});
+
+test('ROM maintenance pauses polling until explicit exit; failed writes are not retried', async () => {
+  let samples=0,writes=0;
+  const s=new Session(() => ({async request(op,data) {
+    if(op==='sample'){samples++;return {hasValidData:true};}
+    if(op==='execute'){writes++;if(data.fail)throw new Error('NACK');return {maintenance:data.exit?null:'ROM'};}
+    return {};
+  },async close(){}}),1);
+  await s.connect({});
+  await s.command('execute',{action:'write'});
+  const before=samples;await delay(15);assert.equal(samples,before);
+  await s.command('execute',{action:'write',exit:true});await delay(15);assert.ok(samples>before);
+  await assert.rejects(s.command('execute',{action:'write',fail:true}),/NACK/);
+  const stopped=samples;await delay(15);assert.equal(samples,stopped);assert.equal(writes,3);
+  await s.disconnect();
+});
+
+test('completion of an old command cannot cancel polling in a new connection', async () => {
+  let finish, samples=0;
+  const bridge={async request(op) {
+    if(op==='execute')return new Promise(resolve=>{finish=resolve;});
+    if(op==='sample'){samples++;return {hasValidData:true};}
+    return {};
+  },async close(){}};
+  const s=new Session(()=>bridge,1);await s.connect({});
+  const old=s.command('execute',{action:'read'});
+  const rejected=assert.rejects(old,/Connection changed/);
+  await delay(0);await s.disconnect();await s.connect({});
+  finish({});await rejected;await delay(15);
+  assert.ok(samples>0);assert.equal(s.commandsPending,0);
+  await s.disconnect();
+});

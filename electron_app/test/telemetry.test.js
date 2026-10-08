@@ -61,7 +61,7 @@ test('time window uses timestamps rather than assuming a fixed acquisition frequ
   assert.deepEqual(visiblePoints(history, 40000), []);
 });
 
-test('current scale includes zero, preserves negative current, and ignores missing cells', async () => {
+test('current scale includes measured zero, preserves negative current, and ignores missing cells', async () => {
   const { valueDomain } = await helpers;
   const domain = valueDomain([{ i: -2000 }, { i: 0 }, { i: null }], ['i'], true);
   assert.ok(domain[0] < -2 && domain[1] > 0);
@@ -83,4 +83,20 @@ test('protection assertion wins marker color over simultaneous cleared flags', a
   assert.equal(markerColor([{ type: 'safety', state: 'ASSERTED' }, { type: 'operation', state: 'CLEARED' }]), '#ef4444');
   assert.equal(markerColor([{ type: 'safety', state: 'CLEARED' }]), '#10b981');
   assert.match(eventText({ code: 'DSG', state: 'INITIAL', label: 'Discharge' }), /already active/);
+});
+
+
+test('milliamp current variations fill the plot and retain distinct axis labels', async () => {
+  const { valueDomain, formatCurrentTick } = await helpers;
+  for (const values of [[-4,-3],[3,4],[-4004,-4003]]) {
+    const [low,high] = valueDomain(values.map(i => ({i})), ['i'], true);
+    assert.ok(high-low < 0.002, '1 mA variation should occupy most of the plot');
+    assert.ok(low < Math.min(...values)/1000 && high > Math.max(...values)/1000);
+    const labels = Array.from({length:5}, (_,n) => formatCurrentTick(low+(high-low)*n/4,high-low));
+    assert.equal(new Set(labels).size, 5);
+    assert.ok(labels.every(label => Number.isFinite(Number(label))));
+  }
+  const [low,high] = valueDomain([{i:0},{i:0}], ['i'], true);
+  assert.ok(low < 0 && high > 0 && high-low < 0.001);
+  assert.equal(formatCurrentTick(-0, high-low),'0');
 });

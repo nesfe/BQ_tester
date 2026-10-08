@@ -59,7 +59,7 @@ npm run build
 
 ```powershell
 python -m pip install pyinstaller==6.11.1
-python -m PyInstaller --noconfirm --clean --onedir --console --name ti-bridge --distpath bridge-dist --workpath bridge-build --specpath bridge-build bridge/ti_bridge.py
+python -m PyInstaller --noconfirm --clean --onedir --console --name ti-bridge --distpath bridge-dist --workpath bridge-build --specpath bridge-build --add-data "$((Resolve-Path bridge/catalog.json).Path);." bridge/ti_bridge.py
 npm run electron:dist
 ```
 

@@ -53,7 +53,7 @@ jobs:
         run: >-
           python -m PyInstaller --noconfirm --clean --onedir --console
           --name ti-bridge --distpath bridge-dist --workpath bridge-build
-          --specpath bridge-build bridge/ti_bridge.py
+          --specpath bridge-build --add-data "$((Resolve-Path bridge/catalog.json).Path);." bridge/ti_bridge.py
 
       - name: Smoke test packaged bridge without hardware
         working-directory: electron_app

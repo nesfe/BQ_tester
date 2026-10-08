@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { CommandExplorer } from './components/CommandExplorer';
 import { Activity, RefreshCw } from 'lucide-react';
 import { TelemetryCards } from './components/TelemetryCards';
 import { ChartsSection } from './components/ChartsSection';
@@ -16,6 +17,7 @@ const STATUS_GROUPS = [
 ];
 
 export default function App() {
+  const [catalog, setCatalog] = useState(null);
   const [devices, setDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -29,6 +31,9 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
 
+  const statusGroups = useMemo(() => catalog ? ['sf', 'op'].map((field, i) => ({ field, type: i ? 'operation' : 'safety', flags: (catalog.commands?.find(e => e.id === (i ? 'mac:0054' : 'mac:0051'))?.bits || []).filter(b => b.hi === b.lo).map(b => ({ bit: b.lo, code: b.code, label: b.label, desc: b.label, severity: i ? 'info' : 'danger' })) })) : STATUS_GROUPS, [catalog]);
+  const statusGroupsRef = useRef(statusGroups);
+  statusGroupsRef.current = statusGroups;
   const previousStatus = useRef({ sf: null, op: null });
   const sequence = useRef(0);
   const recording = useRef(new RecordingBuffer());
@@ -78,6 +83,7 @@ export default function App() {
           flushTelemetry();
           clearPending();
           setTelemetry(null);
+          setCatalog(null);
           previousStatus.current = { sf: null, op: null };
         }
       });
@@ -111,7 +117,7 @@ export default function App() {
   const handleIncomingTelemetry = (data) => {
     const timestamp = data.timestamp ?? Date.now();
     const point = { ...data, timestamp, timeStr: formatTime(timestamp), sequence: ++sequence.current };
-    point.events = detectTransitions(point, previousStatus.current, STATUS_GROUPS);
+    point.events = detectTransitions(point, previousStatus.current, statusGroupsRef.current);
     const batch = pending.current;
     batch.latest = point;
     // Ingest every sample, even when drawing is coalesced into a single browser frame.
@@ -150,7 +156,8 @@ export default function App() {
         setHistory([]);
         setEventLogs([]);
         setStatusMsg("Opening TI adapter & reading battery...");
-        await window.electronAPI.connectDevice(selectedDevice);
+        const connection = await window.electronAPI.connectDevice(selectedDevice);
+        setCatalog(connection?.catalog || null);
         setIsConnected(true);
         setStatusMsg("Connected via TI CMAPI");
       } catch (err) {
@@ -174,7 +181,7 @@ export default function App() {
     } catch (error) { setStatusMsg(error.message); }
   };
 
-  const activeAlerts = telemetry ? SAFETY_STATUS_FLAGS.filter(f => (telemetry.sf & (1 << f.bit)) !== 0) : [];
+  const activeAlerts = telemetry ? statusGroups[0].flags.filter(f => (telemetry.sf & (1 << f.bit)) !== 0) : [];
 
   return (
     <div className="app-container">
@@ -239,7 +246,7 @@ export default function App() {
           isPaused={isPaused}
           setIsPaused={setIsPaused}
           onClearHistory={clearHistory}
-          isConnected={isConnected}
+          isConnected={isConnected && !catalog?.maintenance}
         />
 
         <div className="content-grid-two">
@@ -254,6 +261,8 @@ export default function App() {
             count={recordedCount || history.length}
           />
         </div>
+
+        <CommandExplorer connected={isConnected} catalog={catalog} onCatalog={setCatalog} />
 
         <DebugConsole logs={debugLogs} onClear={clearDebug} />
       </main>
